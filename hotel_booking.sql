@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: localhost:3306
--- Generation Time: Nov 19, 2025 at 01:59 AM
+-- Generation Time: Nov 19, 2025 at 02:56 AM
 -- Server version: 8.0.30
 -- PHP Version: 8.1.10
 
@@ -38,6 +38,13 @@ CREATE TABLE `bookings` (
   `status` enum('pending','confirmed','cancelled','checked_in','checked_out','paid','failed') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT 'pending',
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Dumping data for table `bookings`
+--
+
+INSERT INTO `bookings` (`id`, `booking_code`, `user_id`, `room_id`, `check_in`, `check_out`, `total_price`, `status`, `created_at`) VALUES
+(42, 'BK20251119024635173', 2, 30, '2025-11-19', '2025-11-24', '2500000.00', 'pending', '2025-11-19 09:46:35');
 
 -- --------------------------------------------------------
 
@@ -82,7 +89,8 @@ CREATE TABLE `rooms` (
 --
 
 INSERT INTO `rooms` (`id`, `image`, `room_number`, `room_type_id`, `floor`, `status`, `created_at`) VALUES
-(30, '691d1ce4724cb_1763515620.jpg,691d1ce4726d3_1763515620.jpg,691d1ce47280a_1763515620.jpg,691d1ce472948_1763515620.jpg', '1', 1, 1, 'available', '2025-11-19 08:27:00');
+(30, '691d1ce4724cb_1763515620.jpg,691d1ce4726d3_1763515620.jpg,691d1ce47280a_1763515620.jpg,691d1ce472948_1763515620.jpg', '1', 1, 1, 'booked', '2025-11-19 08:27:00'),
+(31, '691d2784ded2a_1763518340.png,691d2784df2bd_1763518340.jpg,691d2784df5e2_1763518340.jpg,691d2784df9c3_1763518340.png', '2', 1, 1, 'available', '2025-11-19 09:12:20');
 
 -- --------------------------------------------------------
 
@@ -191,7 +199,7 @@ ALTER TABLE `users`
 -- AUTO_INCREMENT for table `bookings`
 --
 ALTER TABLE `bookings`
-  MODIFY `id` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=39;
+  MODIFY `id` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=43;
 
 --
 -- AUTO_INCREMENT for table `pengeluaran`
@@ -203,7 +211,7 @@ ALTER TABLE `pengeluaran`
 -- AUTO_INCREMENT for table `rooms`
 --
 ALTER TABLE `rooms`
-  MODIFY `id` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=31;
+  MODIFY `id` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=32;
 
 --
 -- AUTO_INCREMENT for table `room_types`
