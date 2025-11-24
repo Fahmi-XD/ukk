@@ -304,7 +304,7 @@ if (!empty($params)) {
                             <input type="text" class="form-control" id="edit_phone" name="phone">
                         </div>
                         <div class="mb-3">
-                            <label for="edit_role" class="form-label">Role</label>
+                            <label for="edit_role" class="form-label">Hak Akses</label>
                             <select class="form-select" id="edit_role" name="role" required>
                                 <option value="user">User</option>
                                 <option value="admin">Admin</option>

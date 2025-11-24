@@ -13,13 +13,8 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
     exit;
 }
 
-if (!isset($_SESSION["user_id"])) {
-    header('Location: login.php');
-    exit;
-}
-
 $id = $_GET['id'];
-$user_id = $_SESSION["user_id"];
+$user_id = $_SESSION["user_id"] ?? null;
 
 // Query untuk mengambil data tipe kamar berdasarkan id
 // Perhatian: room_image kini mengambil SEMUA nama file gambar dari satu kamar yang tersedia
@@ -66,11 +61,9 @@ if (!empty($images_string)) {
 }
 
 // Tambahkan gambar placeholder jika kurang dari 4 (opsional, tergantung desain)
-// while (count($room_images) < 4) {
-//     $room_images[] = 'https://i.pinimg.com/736x/42/b6/8c/42b68cd2490f7a0467234a71b4d4d6fb.jpg'; 
-// }
-// --- LOGIKA PERBAIKAN GAMBAR SELESAI ---
-
+while (count($room_images) < 4) {
+    $room_images[] = 'https://i.pinimg.com/736x/42/b6/8c/42b68cd2490f7a0467234a71b4d4d6fb.jpg'; 
+}
 
 if ($room["available_rooms"] == "0") {
     echo '<script>
@@ -80,21 +73,20 @@ if ($room["available_rooms"] == "0") {
     exit;
 }
 
-// Cek apakah user sudah booking kamar ini
-$qq = "SELECT r.*, r.id AS unix_room_id, b.*, b.status AS booking_status FROM bookings b INNER JOIN rooms r ON r.id = b.room_id WHERE user_id = $user_id AND (b.status = 'pending' OR b.status = 'checked_in')";
-$res = $koneksi->query($qq);
+$is_user_booking = false;
 
-if ($res && $res->num_rows > 0) {
-    $ress = $res->fetch_assoc();
-    if ($ress["room_type_id"] == $id) {
-        echo '<script>
-                alert("Anda sudah memesan kamar ini dan statusnya masih aktif.");
-                window.location.href = "index.php";
-              </script>';
-        exit;
+if (isset($user_id) && $user_id != null) {
+    // Cek apakah user sudah booking kamar ini
+    $qq = "SELECT r.*, r.id AS unix_room_id, b.*, b.status AS booking_status FROM bookings b INNER JOIN rooms r ON r.id = b.room_id WHERE user_id = $user_id AND (b.status = 'pending' OR b.status = 'checked_in' OR b.status = 'paid')";
+    $res = $koneksi->query($qq);
+
+    if ($res && $res->num_rows > 0) {
+        $ress = $res->fetch_assoc();
+        if ($ress["room_type_id"] == $id) {
+            $is_user_booking = true;
+        }
     }
 }
-
 
 // Format harga
 $formatted_price = number_format($room['price_per_night'], 0, ',', '.');
@@ -144,6 +136,14 @@ $facilities = explode(",", $room['facilities']);
 
         .availability-badge {
             font-size: 1.2rem;
+        }
+
+        .info-box {
+            border-left: 4px solid #0d6efd;
+            background-color: #f0f7ff;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 5px;
         }
     </style>
 </head>
@@ -249,10 +249,17 @@ $facilities = explode(",", $room['facilities']);
                         </div>
 
                         <?php if ($room['available_rooms'] > 0): ?>
-                            <?php if (isset($_SESSION["user_id"])): ?>
+                            <?php if ($is_user_booking): ?>
+                                <div class="info-box d-print-none">
+                                    <i class="fas fa-info-circle me-2"></i>
+                                    <strong>Informasi</strong>
+                                    <p class="mt-2 mb-0">Anda tidak dapat memesan kamar ini karena Anda masih mempunyai pesanan kamar yang masih aktif.</p>
+                                </div>
+                                <button disabled style="cursor: no-drop;" class="btn btn-warning btn-lg w-100 mb-3">Pesan Sekarang</button>
+                            <?php elseif (isset($_SESSION["user_id"]) && $user_id != null): ?>
                                 <a href="kamar_pesan.php?id=<?= $room['id'] ?>" class="btn btn-primary btn-lg w-100 mb-3">Pesan Sekarang</a>
                             <?php else: ?>
-                                <a href="login.php" class="btn btn-primary btn-lg w-100 mb-3">Pesan Sekarang</a>
+                                <a href="login.php" class="btn btn-danger btn-lg w-100 mb-3">Login diperlukan</a>
                             <?php endif; ?>
                         <?php else: ?>
                             <button class="btn btn-secondary btn-lg w-100 mb-3" disabled>Tidak Tersedia</button>

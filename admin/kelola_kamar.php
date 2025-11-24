@@ -11,44 +11,23 @@ if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] != 'admin') {
 $message = '';
 $upload_dir = '../uploads/kamar/';
 
-// Fungsi untuk Ambil Semua Tipe Kamar (Tidak Berubah)
-$room_types_result = $koneksi->query("SELECT * FROM room_types");
-$room_types = $room_types_result->fetch_all(MYSQLI_ASSOC);
-
-/**
- * Mengunggah banyak file.
- * @param string $file_input_name Nama input file (misalnya 'image_files').
- * @param string $upload_dir Direktori unggahan.
- * @return array|false Daftar nama file baru yang diunggah, atau false jika ada error.
- */
+// --- FUNGSI HELPER UPLOAD & DELETE ---
 function handle_multi_upload($file_input_name, $upload_dir)
 {
     $uploaded_files = [];
     $allowed_ext = ['jpg', 'jpeg', 'png', 'gif'];
-
-    // Periksa apakah input file diatur dan merupakan array
     if (isset($_FILES[$file_input_name]) && is_array($_FILES[$file_input_name]['name'])) {
         $file_count = count($_FILES[$file_input_name]['name']);
-
         for ($i = 0; $i < $file_count; $i++) {
-            // Hanya proses file yang diunggah tanpa error
             if ($_FILES[$file_input_name]['error'][$i] === UPLOAD_ERR_OK) {
                 $file_tmp_name = $_FILES[$file_input_name]['tmp_name'][$i];
                 $file_name = $_FILES[$file_input_name]['name'][$i];
                 $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-
                 if (in_array($file_ext, $allowed_ext)) {
                     $new_file_name = uniqid() . '_' . time() . '.' . $file_ext;
                     $destination = $upload_dir . $new_file_name;
-
                     if (move_uploaded_file($file_tmp_name, $destination)) {
                         $uploaded_files[] = $new_file_name;
-                    } else {
-                        // Jika gagal upload, hapus file yang sudah terlanjur terupload di iterasi sebelumnya
-                        foreach ($uploaded_files as $f) {
-                            delete_old_image($f, $upload_dir);
-                        }
-                        return false; // Gagal di tengah jalan
                     }
                 }
             }
@@ -57,12 +36,9 @@ function handle_multi_upload($file_input_name, $upload_dir)
     return $uploaded_files;
 }
 
-// Helper function to delete old file
 function delete_old_image($file_name, $upload_dir)
 {
-    // Mengambil semua nama file dari string yang dipisahkan koma
     $file_list = explode(',', $file_name);
-
     foreach ($file_list as $f) {
         $f = trim($f);
         if (!empty($f) && $f != 'default.jpg' && file_exists($upload_dir . $f)) {
@@ -71,237 +47,224 @@ function delete_old_image($file_name, $upload_dir)
     }
 }
 
+// --- LOGIKA CRUD ---
 
-// 1. Tambah Kamar
+// 1. Tambah Kamar (SATUAN & MASSAL)
 if (isset($_POST['add_room'])) {
-    $room_number = $_POST['room_number'];
+    $mode = $_POST['add_mode']; // 'single' atau 'bulk'
     $room_type_id = $_POST['room_type_id'];
     $floor = $_POST['floor'];
 
-    // Lakukan Unggahan Multi File
+    // Upload gambar (berlaku untuk satu atau banyak kamar yang dibuat kali ini)
     $image_names_array = handle_multi_upload('image_files', $upload_dir);
+    $image_to_save = empty($image_names_array) ? 'default.jpg' : implode(',', $image_names_array);
 
-    if ($image_names_array === false) {
-        $message = "<div class='alert alert-danger'>Gagal mengunggah beberapa gambar. Pastikan format file benar (jpg, jpeg, png, gif) dan ukuran tidak melebihi batas.</div>";
-    } elseif (empty($image_names_array)) {
-        // Jika tidak ada file yang diunggah
-        $image_to_save = 'default.jpg';
-        $message = "<div class='alert alert-warning'>Tidak ada gambar diunggah. Menggunakan gambar default.</div>";
-    } else {
-        // Gabungkan nama file menjadi string yang dipisahkan koma
-        $image_to_save = implode(',', $image_names_array);
+    if ($mode == 'single') {
+        $room_number = $_POST['room_number'];
 
-        // Cek duplikasi nomor kamar
+        // Cek Duplikasi
         $check = $koneksi->prepare("SELECT id FROM rooms WHERE room_number = ?");
         $check->bind_param("s", $room_number);
         $check->execute();
-        $check->store_result();
-
-        if ($check->num_rows == 0) {
+        if ($check->get_result()->num_rows == 0) {
             $stmt = $koneksi->prepare("INSERT INTO rooms (room_number, room_type_id, floor, image, status) VALUES (?, ?, ?, ?, 'available')");
             $stmt->bind_param("siss", $room_number, $room_type_id, $floor, $image_to_save);
             if ($stmt->execute()) {
-                $message = "<div class='alert alert-success'>Kamar berhasil ditambahkan!</div>";
+                $message = "<div class='alert alert-success'>Kamar $room_number berhasil ditambahkan!</div>";
             } else {
-                $message = "<div class='alert alert-danger'>Gagal menambahkan kamar: " . $stmt->error . "</div>";
-                // Hapus file jika DB gagal (hanya jika bukan 'default.jpg')
-                if ($image_to_save != 'default.jpg') {
-                    delete_old_image($image_to_save, $upload_dir);
-                }
+                $message = "<div class='alert alert-danger'>Gagal DB: " . $stmt->error . "</div>";
             }
-            $stmt->close();
         } else {
-            $message = "<div class='alert alert-warning'>Nomor kamar sudah terdaftar!</div>";
-            // Hapus file jika nomor kamar duplikat
-            if ($image_to_save != 'default.jpg') {
-                delete_old_image($image_to_save, $upload_dir);
+            $message = "<div class='alert alert-warning'>Nomor kamar $room_number sudah ada!</div>";
+        }
+    } elseif ($mode == 'bulk') {
+        $start_number = (int)$_POST['start_number'];
+        $qty = (int)$_POST['qty'];
+        $success_count = 0;
+        $fail_count = 0;
+
+        $stmt = $koneksi->prepare("INSERT INTO rooms (room_number, room_type_id, floor, image, status) VALUES (?, ?, ?, ?, 'available')");
+        $check = $koneksi->prepare("SELECT id FROM rooms WHERE room_number = ?");
+
+        for ($i = 0; $i < $qty; $i++) {
+            $current_num = (string)($start_number + $i);
+
+            // Cek dulu
+            $check->bind_param("s", $current_num);
+            $check->execute();
+            if ($check->get_result()->num_rows == 0) {
+                $stmt->bind_param("siss", $current_num, $room_type_id, $floor, $image_to_save);
+                if ($stmt->execute()) $success_count++;
+                else $fail_count++;
+            } else {
+                $fail_count++;
             }
         }
-        $check->close();
+        $message = "<div class='alert alert-info'>Berhasil membuat $success_count kamar. Gagal/Duplikat: $fail_count.</div>";
     }
 }
 
-// 2. Edit Kamar
+// 2. Edit Kamar (SATUAN)
 if (isset($_POST['edit_room'])) {
     $id = $_POST['room_id'];
     $room_number = $_POST['room_number'];
     $room_type_id = $_POST['room_type_id'];
     $floor = $_POST['floor'];
     $status = $_POST['status'];
-    $old_image_string = $_POST['old_image']; // Ambil string file lama (dipisahkan koma)
 
-    // Ambil data kamar saat ini
-    $get_old_room_stmt = $koneksi->prepare("SELECT image FROM rooms WHERE id = ?");
-    $get_old_room_stmt->bind_param("i", $id);
-    $get_old_room_stmt->execute();
-    $current_room = $get_old_room_stmt->get_result()->fetch_assoc();
-    $get_old_room_stmt->close();
+    $curr_stmt = $koneksi->prepare("SELECT image FROM rooms WHERE id = ?");
+    $curr_stmt->bind_param("i", $id);
+    $curr_stmt->execute();
+    $current_room = $curr_stmt->get_result()->fetch_assoc();
 
-    $image_to_save = $current_room['image']; // Default: pertahankan string gambar lama
+    $image_to_save = $current_room['image'];
+    $new_images = handle_multi_upload('edit_image_files', $upload_dir);
 
-    // Lakukan Unggahan Multi File (hanya jika ada file baru diunggah)
-    $new_image_names_array = handle_multi_upload('edit_image_files', $upload_dir);
+    if (!empty($new_images)) {
+        $image_to_save = implode(',', $new_images);
+        delete_old_image($current_room['image'], $upload_dir);
+    }
 
-    if ($new_image_names_array === false) {
-        $message = "<div class='alert alert-danger'>Gagal mengunggah gambar baru. Pastikan format file benar (jpg, jpeg, png, gif) dan ukuran tidak melebihi batas.</div>";
+    $stmt = $koneksi->prepare("UPDATE rooms SET room_number=?, room_type_id=?, floor=?, status=?, image=? WHERE id=?");
+    $stmt->bind_param("sisssi", $room_number, $room_type_id, $floor, $status, $image_to_save, $id);
+    if ($stmt->execute()) {
+        $message = "<div class='alert alert-success'>Kamar berhasil diperbarui!</div>";
     } else {
-        if (!empty($new_image_names_array)) {
-            // Ada file baru yang berhasil diunggah
-            $new_image_string = implode(',', $new_image_names_array);
-            $image_to_save = $new_image_string; // Timpa semua gambar lama dengan yang baru
-
-            // Hapus file lama jika ada dan bukan default/kosong
-            delete_old_image($current_room['image'], $upload_dir);
-        }
-
-        // Perbarui data di database
-        $stmt = $koneksi->prepare("UPDATE rooms SET room_number=?, room_type_id=?, floor=?, status=?, image=? WHERE id=?");
-        $stmt->bind_param("sisssi", $room_number, $room_type_id, $floor, $status, $image_to_save, $id);
-
-        if ($stmt->execute()) {
-            $message = "<div class='alert alert-success'>Kamar berhasil diperbarui!</div>";
-        } else {
-            $message = "<div class='alert alert-danger'>Gagal memperbarui kamar: " . $stmt->error . "</div>";
-            // Jika update DB gagal, tapi file baru sudah diupload, hapus file baru tersebut
-            if (!empty($new_image_names_array)) {
-                delete_old_image($new_image_string, $upload_dir);
-            }
-        }
-        $stmt->close();
+        $message = "<div class='alert alert-danger'>Gagal update.</div>";
     }
 }
 
-// 3. Hapus Kamar
+// 3. Edit Massal Berdasarkan Tipe (BARU)
+if (isset($_POST['bulk_edit_by_type'])) {
+    $target_type_id = $_POST['target_type_id'];
+    $new_status = $_POST['bulk_status']; // Opsional
+    $new_floor = $_POST['bulk_floor']; // Opsional
+
+    $query_parts = [];
+    $params = [];
+    $types = "";
+
+    // Update Status jika dipilih
+    if ($new_status != 'no_change') {
+        $query_parts[] = "status = ?";
+        $params[] = $new_status;
+        $types .= "s";
+    }
+
+    // Update Lantai jika diisi
+    if (!empty($new_floor)) {
+        $query_parts[] = "floor = ?";
+        $params[] = $new_floor;
+        $types .= "i";
+    }
+
+    // Update Gambar jika diupload
+    $new_bulk_images = handle_multi_upload('bulk_image_files', $upload_dir);
+    if (!empty($new_bulk_images)) {
+        $img_str = implode(',', $new_bulk_images);
+        $query_parts[] = "image = ?";
+        $params[] = $img_str;
+        $types .= "s";
+
+        // Note: Menghapus gambar lama secara massal agak rumit karena tiap kamar mungkin beda gambar.
+        // Disini kita hanya menimpa (overwrite). 
+    }
+
+    if (!empty($query_parts)) {
+        $sql = "UPDATE rooms SET " . implode(', ', $query_parts) . " WHERE room_type_id = ?";
+        $params[] = $target_type_id;
+        $types .= "i";
+
+        $stmt = $koneksi->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+
+        if ($stmt->execute()) {
+            $affected = $stmt->affected_rows;
+            $message = "<div class='alert alert-success'>Berhasil memperbarui $affected kamar secara massal!</div>";
+        } else {
+            $message = "<div class='alert alert-danger'>Gagal update massal: " . $stmt->error . "</div>";
+        }
+    } else {
+        $message = "<div class='alert alert-warning'>Tidak ada perubahan yang dipilih.</div>";
+    }
+}
+
+// 4. Hapus Kamar
 if (isset($_GET['delete_id'])) {
     $id = $_GET['delete_id'];
-
-    // Ambil string gambar lama sebelum dihapus dari DB
-    $get_image_stmt = $koneksi->prepare("SELECT image FROM rooms WHERE id = ?");
-    $get_image_stmt->bind_param("i", $id);
-    $get_image_stmt->execute();
-    $get_image_result = $get_image_stmt->get_result();
-    $room_to_delete = $get_image_result->fetch_assoc();
-    $get_image_stmt->close();
+    $get_img = $koneksi->prepare("SELECT image FROM rooms WHERE id = ?");
+    $get_img->bind_param("i", $id);
+    $get_img->execute();
+    $del_room = $get_img->get_result()->fetch_assoc();
 
     $stmt = $koneksi->prepare("DELETE FROM rooms WHERE id = ?");
     $stmt->bind_param("i", $id);
     if ($stmt->execute()) {
-        // Hapus file fisik setelah berhasil dihapus dari DB
-        if ($room_to_delete && !empty($room_to_delete['image'])) {
-            delete_old_image($room_to_delete['image'], $upload_dir); // Menggunakan fungsi delete_old_image yang sudah diubah
-        }
-        $message = "<div class='alert alert-success'>Kamar berhasil dihapus!</div>";
+        if ($del_room) delete_old_image($del_room['image'], $upload_dir);
+        header("Location: kelola_kamar.php");
+        exit;
     } else {
-        $message = "<div class='alert alert-danger'>Gagal menghapus kamar. Kamar mungkin terikat dengan data pesanan atau error DB.</div>";
+        $message = "<div class='alert alert-danger'>Gagal hapus.</div>";
     }
-    $stmt->close();
-
-    // Hilangkan parameter delete_id dari URL setelah operasi
-    header("Location: kelola_kamar.php");
-    exit;
 }
 
+// --- DATA UNTUK FILTER & FORM ---
+$room_types_result = $koneksi->query("SELECT * FROM room_types ORDER BY name ASC");
+$all_room_types = $room_types_result->fetch_all(MYSQLI_ASSOC);
 
-// --- Logika Pencarian dan Pengurutan (Tidak Berubah) ---
-// ... (Logika pencarian dan pengurutan tetap sama) ...
+$floors_result = $koneksi->query("SELECT DISTINCT floor FROM rooms ORDER BY floor ASC");
+$all_floors = [];
+while ($row = $floors_result->fetch_assoc()) $all_floors[] = $row['floor'];
 
+// --- FILTER LOGIC ---
+$search_term = isset($_GET['search']) ? trim($_GET['search']) : '';
+$filter_type = isset($_GET['filter_type']) ? $_GET['filter_type'] : '';
+$filter_floor = isset($_GET['filter_floor']) ? $_GET['filter_floor'] : '';
+$filter_status = isset($_GET['filter_status']) ? $_GET['filter_status'] : '';
+$sort_by = isset($_GET['sort_by']) ? $_GET['sort_by'] : 'latest';
 
-$search_term = $_GET['search'] ?? '';
-$sort_by = $_GET['sort'] ?? 'latest';
 $where_clauses = [];
-$order_clause = "";
 $params = [];
-$param_types = '';
+$param_types = "";
 
-// 1. Kondisi Pencarian (Filtering)
 if (!empty($search_term)) {
-    $like_room_number = '%' . $search_term . '%';
-    $like_room_type = '%' . $search_term . '%';
-    $like_floor = '%' . $search_term . '%';
-    $like_status = '%' . $search_term . '%';
-
-    $where_clauses[] = "
-        (
-            r.room_number LIKE ? OR
-            rt.name LIKE ? OR
-            r.floor LIKE ? OR
-            r.status LIKE ?
-        )
-    ";
-
-    $params = array(
-        $like_room_number,
-        $like_room_type,
-        $like_floor,
-        $like_status
-    );
-    $param_types = 'ssss';
+    $like = '%' . $search_term . '%';
+    $where_clauses[] = "(r.room_number LIKE ? OR rt.name LIKE ?)";
+    $param_types .= "ss";
+    array_push($params, $like, $like);
+}
+if (!empty($filter_type) && $filter_type != 'all') {
+    $where_clauses[] = "r.room_type_id = ?";
+    $param_types .= "i";
+    $params[] = $filter_type;
+}
+if (!empty($filter_floor) && $filter_floor != 'all') {
+    $where_clauses[] = "r.floor = ?";
+    $param_types .= "i";
+    $params[] = $filter_floor;
+}
+if (!empty($filter_status) && $filter_status != 'all') {
+    $where_clauses[] = "r.status = ?";
+    $param_types .= "s";
+    $params[] = $filter_status;
 }
 
-// 2. Pengurutan (Sorting)
-switch ($sort_by) {
-    case 'room_asc':
-        $order_clause = "ORDER BY r.room_number ASC";
-        break;
-    case 'room_desc':
-        $order_clause = "ORDER BY r.room_number DESC";
-        break;
-    case 'floor_asc':
-        $order_clause = "ORDER BY r.floor ASC, r.room_number ASC";
-        break;
-    case 'floor_desc':
-        $order_clause = "ORDER BY r.floor DESC, r.room_number ASC";
-        break;
-    case 'type_asc':
-        $order_clause = "ORDER BY rt.name ASC, r.room_number ASC";
-        break;
-    case 'type_desc':
-        $order_clause = "ORDER BY rt.name DESC, r.room_number ASC";
-        break;
-    case 'latest': // Default
-    default:
-        $order_clause = "ORDER BY r.id DESC"; // Asumsi ID kamar mencerminkan terbaru
-        break;
-}
+$order_clause = "ORDER BY r.id DESC";
+if ($sort_by == 'number_asc') $order_clause = "ORDER BY r.room_number ASC";
+elseif ($sort_by == 'number_desc') $order_clause = "ORDER BY r.room_number DESC";
+elseif ($sort_by == 'floor_asc') $order_clause = "ORDER BY r.floor ASC, r.room_number ASC";
 
-
-// 3. Kueri Gabungan
-$query = "
-    SELECT r.*, rt.name as room_type_name
-    FROM rooms r
-    JOIN room_types rt ON r.room_type_id = rt.id
-";
-
-if (!empty($where_clauses)) {
-    $query .= " WHERE " . implode(' AND ', $where_clauses);
-}
-
+$query = "SELECT r.*, rt.name as room_type_name FROM rooms r JOIN room_types rt ON r.room_type_id = rt.id";
+if (!empty($where_clauses)) $query .= " WHERE " . implode(' AND ', $where_clauses);
 $query .= " " . $order_clause;
 
-// Eksekusi Kueri
 if (!empty($params)) {
     $stmt = $koneksi->prepare($query);
-
-    // START PERBAIKAN: Ubah array nilai menjadi array referensi
-    $ref_params = array();
-    $ref_params[] = &$param_types;
-
-    // Iterasi melalui setiap parameter, dan buat referensinya
-    foreach ($params as $key => $value) {
-        $ref_params[] = &$params[$key];
-    }
-
-    // Panggil bind_param menggunakan array referensi
-    call_user_func_array([$stmt, 'bind_param'], $ref_params);
-
+    $stmt->bind_param($param_types, ...$params);
     $stmt->execute();
-    $rooms_result = $stmt->get_result();
-    $rooms = $rooms_result->fetch_all(MYSQLI_ASSOC);
-    $stmt->close();
+    $rooms = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 } else {
-    // Jalankan kueri sederhana jika tidak ada pencarian
-    $rooms_result = $koneksi->query($query);
-    $rooms = $rooms_result->fetch_all(MYSQLI_ASSOC);
+    $rooms = $koneksi->query($query)->fetch_all(MYSQLI_ASSOC);
 }
 ?>
 
@@ -309,6 +272,9 @@ if (!empty($params)) {
 <html lang="id">
 
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kelola Kamar - Hotel Admin</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="../assets/css/admin-style.css">
@@ -328,97 +294,113 @@ if (!empty($params)) {
 
             <div class="container-fluid px-4">
                 <?= $message ?>
-                <div class="row my-4">
-                    <h3 class="fs-4 mb-3">Daftar Kamar</h3>
 
-                    <div class="col-md-12 d-flex justify-content-between align-items-center mb-3">
-                        <div class="d-flex flex-grow-1 me-3">
-                            <form method="GET" action="kelola_kamar.php" class="d-flex w-100">
-                                <input type="hidden" name="sort" value="<?= htmlspecialchars($sort_by) ?>">
-                                <input type="text" name="search" class="form-control me-2" placeholder="Cari No. Kamar, Tipe, Lantai, atau Status..." value="<?= htmlspecialchars($search_term) ?>">
-                                <button type="submit" class="btn btn-outline-primary">Cari</button>
-                                <?php if (!empty($search_term)): ?>
-                                    <a href="kelola_kamar.php?sort=<?= htmlspecialchars($sort_by) ?>" class="btn btn-outline-secondary ms-2">Reset</a>
-                                <?php endif; ?>
-                            </form>
-                        </div>
-
-                        <div class="d-flex align-items-center">
-                            <form method="GET" action="kelola_kamar.php" class="me-3">
-                                <input type="hidden" name="search" value="<?= htmlspecialchars($search_term) ?>">
-                                <select name="sort" onchange="this.form.submit()" class="form-select form-select-sm">
-                                    <option value="latest" <?= $sort_by == 'latest' ? 'selected' : '' ?>>Urutkan: Terbaru</option>
-                                    <optgroup label="Nomor Kamar">
-                                        <option value="room_asc" <?= $sort_by == 'room_asc' ? 'selected' : '' ?>>Menurun (A-Z)</option>
-                                        <option value="room_desc" <?= $sort_by == 'room_desc' ? 'selected' : '' ?>>Menaik (Z-A)</option>
-                                    </optgroup>
-                                    <optgroup label="Lantai">
-                                        <option value="floor_asc" <?= $sort_by == 'floor_asc' ? 'selected' : '' ?>>Terkecil - Terbesar</option>
-                                        <option value="floor_desc" <?= $sort_by == 'floor_desc' ? 'selected' : '' ?>>Terbesar - Terkecil</option>
-                                    </optgroup>
-                                    <optgroup label="Tipe Kamar">
-                                        <option value="type_asc" <?= $sort_by == 'type_asc' ? 'selected' : '' ?>>Menurun (A-Z)</option>
-                                        <option value="type_desc" <?= $sort_by == 'type_desc' ? 'selected' : '' ?>>Menaik (Z-A)</option>
-                                    </optgroup>
-                                </select>
-                            </form>
-                            <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addRoomModal">
-                                <i class="fas fa-plus me-2"></i>Tambah Kamar
+                <div class="card shadow-sm mb-4">
+                    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <h5 class="mb-0"><i class="fas fa-bed me-2"></i>Manajemen Kamar</h5>
+                        <div>
+                            <button type="button" class="btn btn-outline-warning btn-sm me-2" data-bs-toggle="modal" data-bs-target="#bulkEditModal">
+                                <i class="fas fa-edit me-1"></i> Edit Massal per Tipe
+                            </button>
+                            <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addRoomModal">
+                                <i class="fas fa-plus me-1"></i> Tambah Kamar
                             </button>
                         </div>
                     </div>
+                    <div class="card-body">
+                        <form method="GET" action="kelola_kamar.php">
+                            <div class="row g-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold">Cari</label>
+                                    <input type="text" name="search" class="form-control" placeholder="No. Kamar / Tipe..." value="<?= htmlspecialchars($search_term) ?>">
+                                </div>
+                                <div class="col-md-2">
+                                    <select name="filter_type" class="form-select">
+                                        <option value="all">Semua Tipe</option>
+                                        <?php foreach ($all_room_types as $type): ?>
+                                            <option value="<?= $type['id'] ?>" <?= $filter_type == $type['id'] ? 'selected' : '' ?>><?= htmlspecialchars($type['name']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <select name="filter_floor" class="form-select">
+                                        <option value="all">Semua Lantai</option>
+                                        <?php foreach ($all_floors as $fl): ?>
+                                            <option value="<?= $fl ?>" <?= $filter_floor == $fl ? 'selected' : '' ?>>Lantai <?= $fl ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <select name="filter_status" class="form-select">
+                                        <option value="all">Semua Status</option>
+                                        <option value="available" <?= $filter_status == 'available' ? 'selected' : '' ?>>Available</option>
+                                        <option value="booked" <?= $filter_status == 'booked' ? 'selected' : '' ?>>Booked</option>
+                                        <option value="maintenance" <?= $filter_status == 'maintenance' ? 'selected' : '' ?>>Maintenance</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <select name="sort_by" class="form-select">
+                                        <option value="latest" <?= $sort_by == 'latest' ? 'selected' : '' ?>>Terbaru</option>
+                                        <option value="number_asc" <?= $sort_by == 'number_asc' ? 'selected' : '' ?>>No. Kamar (A-Z)</option>
+                                        <option value="floor_asc" <?= $sort_by == 'floor_asc' ? 'selected' : '' ?>>Lantai (Bawah-Atas)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-1">
+                                    <button type="submit" class="btn btn-primary w-100"><i class="fas fa-search"></i></button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
 
+                <div class="row my-4">
                     <div class="col-md-12">
                         <div class="table-responsive">
-                            <table class="table bg-white rounded shadow-sm table-hover">
-                                <thead>
+                            <table class="table bg-white rounded shadow-sm table-hover align-middle">
+                                <thead class="table-light">
                                     <tr>
-                                        <th scope="col" width="50">#</th>
-                                        <th scope="col">No. Kamar</th>
-                                        <th scope="col">Gambar</th>
-                                        <th scope="col">Tipe</th>
-                                        <th scope="col">Lantai</th>
-                                        <th scope="col">Status</th>
-                                        <th scope="col" width="150">Aksi</th>
+                                        <th>#</th>
+                                        <th>Gambar</th>
+                                        <th>No. Kamar</th>
+                                        <th>Tipe</th>
+                                        <th>Lantai</th>
+                                        <th>Status</th>
+                                        <th>Aksi</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php if (!empty($rooms)): ?>
                                         <?php $no = 1;
                                         foreach ($rooms as $room):
-                                            // Ambil gambar pertama dari string yang dipisahkan koma
                                             $images = explode(',', $room['image']);
                                             $first_image = trim($images[0]);
                                             $image_src = "../uploads/kamar/" . htmlspecialchars($first_image);
+                                            $status_badge = match ($room['status']) {
+                                                'available' => 'bg-success',
+                                                'booked' => 'bg-warning text-dark',
+                                                'maintenance' => 'bg-danger',
+                                                default => 'bg-secondary'
+                                            };
                                         ?>
                                             <tr>
-                                                <th scope="row"><?= $no++ ?></th>
-                                                <td><?= htmlspecialchars($room['room_number']) ?></td>
-                                                <td><img height="100" src="<?= $image_src ?>" alt="<?= htmlspecialchars($room['room_type_name']) ?>"></td>
+                                                <td><?= $no++ ?></td>
+                                                <td><img src="<?= $image_src ?>" class="rounded" style="width: 60px; height: 40px; object-fit: cover; border: 1px solid #eee;"></td>
+                                                <td class="fw-bold"><?= htmlspecialchars($room['room_number']) ?></td>
                                                 <td><?= htmlspecialchars($room['room_type_name']) ?></td>
                                                 <td><?= htmlspecialchars($room['floor']) ?></td>
+                                                <td><span class="badge <?= $status_badge ?>"><?= ucfirst($room['status']) ?></span></td>
                                                 <td>
-                                                    <?php
-                                                    $status_class = match ($room['status']) {
-                                                        'available' => 'badge bg-success',
-                                                        'booked' => 'badge bg-warning text-dark',
-                                                        'maintenance' => 'badge bg-danger',
-                                                        default => 'badge bg-secondary',
-                                                    };
-                                                    echo "<span class='{$status_class}'>" . ucfirst(htmlspecialchars($room['status'])) . "</span>";
-                                                    ?>
-                                                </td>
-                                                <td>
-                                                    <button type="button" class="btn btn-sm btn-info text-white edit-btn"
+                                                    <button type="button" class="btn btn-sm btn-outline-warning edit-btn"
                                                         data-bs-toggle="modal" data-bs-target="#editRoomModal"
                                                         data-id="<?= $room['id'] ?>"
                                                         data-number="<?= htmlspecialchars($room['room_number']) ?>"
                                                         data-type-id="<?= $room['room_type_id'] ?>"
                                                         data-floor="<?= $room['floor'] ?>"
                                                         data-status="<?= $room['status'] ?>"
-                                                        data-image="<?= htmlspecialchars($room['image']) ?>"> <i class="fas fa-edit"></i>
+                                                        data-image="<?= htmlspecialchars($room['image']) ?>">
+                                                        <i class="fas fa-edit"></i>
                                                     </button>
-                                                    <a href="kelola_kamar.php?delete_id=<?= $room['id'] ?>" class="btn btn-sm btn-danger" onclick="return confirm('Yakin ingin menghapus kamar ini? Ini akan menghapus semua file gambar terkait dan setiap pemesanan (booking) yang mengacu ke kamar ini.');">
+                                                    <a href="kelola_kamar.php?delete_id=<?= $room['id'] ?>" class="btn btn-sm btn-outline-danger" onclick="return confirm('Hapus kamar ini?');">
                                                         <i class="fas fa-trash"></i>
                                                     </a>
                                                 </td>
@@ -426,7 +408,7 @@ if (!empty($params)) {
                                         <?php endforeach; ?>
                                     <?php else: ?>
                                         <tr>
-                                            <td colspan="6" class="text-center">Tidak ada kamar yang ditemukan.</td>
+                                            <td colspan="7" class="text-center py-4 text-muted">Tidak ada data.</td>
                                         </tr>
                                     <?php endif; ?>
                                 </tbody>
@@ -434,41 +416,74 @@ if (!empty($params)) {
                         </div>
                     </div>
                 </div>
-
             </div>
         </div>
     </div>
 
-    <div class="modal fade" id="addRoomModal" tabindex="-1" aria-labelledby="addRoomModalLabel" aria-hidden="true">
-        <div class="modal-dialog">
+    <div class="modal fade" id="addRoomModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <form action="kelola_kamar.php" method="POST" enctype="multipart/form-data">
                     <div class="modal-header">
-                        <h5 class="modal-title" id="addRoomModalLabel">Tambah Kamar Baru</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        <h5 class="modal-title">Tambah Kamar</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
-                        <div class="mb-3">
-                            <label for="room_number" class="form-label">Nomor Kamar</label>
-                            <input type="text" class="form-control" id="room_number" name="room_number" required>
+                        <ul class="nav nav-tabs mb-3" id="addRoomTab" role="tablist">
+                            <li class="nav-item">
+                                <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single-pane" type="button" role="tab" onclick="setMode('single')">Tambah Satuan</button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link" id="bulk-tab" data-bs-toggle="tab" data-bs-target="#bulk-pane" type="button" role="tab" onclick="setMode('bulk')">Tambah Banyak (Bulk)</button>
+                            </li>
+                        </ul>
+
+                        <input type="hidden" name="add_mode" id="add_mode" value="single">
+
+                        <div class="row mb-3 bg-light p-2 rounded border mx-1">
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label fw-bold">Tipe Kamar</label>
+                                <select class="form-select" name="room_type_id" required>
+                                    <option value="">Pilih Tipe...</option>
+                                    <?php foreach ($all_room_types as $type): ?>
+                                        <option value="<?= $type['id'] ?>"><?= htmlspecialchars($type['name']) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label fw-bold">Lantai</label>
+                                <input type="number" class="form-control" name="floor" required min="1" value="1">
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label fw-bold">Gambar (Default)</label>
+                                <input type="file" class="form-control" name="image_files[]" accept="image/*" multiple required>
+                                <div class="form-text x-small">Gambar ini akan digunakan untuk semua kamar yang dibuat sekarang.</div>
+                            </div>
                         </div>
-                        <div class="mb-3">
-                            <label for="room_type_id" class="form-label">Tipe Kamar</label>
-                            <select class="form-select" id="room_type_id" name="room_type_id" required>
-                                <option value="">Pilih Tipe Kamar</option>
-                                <?php foreach ($room_types as $type): ?>
-                                    <option value="<?= $type['id'] ?>"><?= htmlspecialchars($type['name']) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="mb-3">
-                            <label for="floor" class="form-label">Lantai</label>
-                            <input type="number" class="form-control" id="floor" name="floor" required min="1">
-                        </div>
-                        <div class="mb-3">
-                            <label for="image_files" class="form-label">Unggah Gambar (Maks. 4 File - JPG, PNG, GIF)</label>
-                            <input type="file" class="form-control" id="image_files" name="image_files[]" accept=".jpg, .jpeg, .png, .gif" multiple required>
-                            <div class="form-text">File akan disimpan di: **`uploads/kamar/`**</div>
+
+                        <div class="tab-content" id="addRoomTabContent">
+                            <div class="tab-pane fade show active" id="single-pane" role="tabpanel">
+                                <div class="mb-3">
+                                    <label class="form-label">Nomor Kamar (Contoh: 101 atau A1)</label>
+                                    <input type="text" class="form-control" name="room_number" id="single_room_number">
+                                </div>
+                            </div>
+
+                            <div class="tab-pane fade" id="bulk-pane" role="tabpanel">
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Nomor Awal (Angka)</label>
+                                        <input type="number" class="form-control" name="start_number" id="bulk_start" placeholder="Contoh: 101">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Jumlah Kamar</label>
+                                        <input type="number" class="form-control" name="qty" id="bulk_qty" placeholder="Contoh: 10">
+                                    </div>
+                                </div>
+                                <div class="alert alert-info x-small">
+                                    <i class="fas fa-info-circle"></i> Sistem akan membuat nomor kamar berurutan mulai dari <b>Nomor Awal</b> sebanyak <b>Jumlah Kamar</b>. Nomor yang duplikat akan dilewati.
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="modal-footer">
@@ -480,51 +495,109 @@ if (!empty($params)) {
         </div>
     </div>
 
-    <div class="modal fade" id="editRoomModal" tabindex="-1" aria-labelledby="editRoomModalLabel" aria-hidden="true">
+    <div class="modal fade" id="bulkEditModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form action="kelola_kamar.php" method="POST" enctype="multipart/form-data">
+                    <div class="modal-header bg-warning text-dark">
+                        <h5 class="modal-title"><i class="fas fa-cogs"></i> Edit Massal per Tipe</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-warning x-small">
+                            Hati-hati! Perubahan disini akan berdampak ke <b>SEMUA</b> kamar pada tipe yang dipilih.
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">Pilih Tipe Kamar (Target)</label>
+                            <select class="form-select" name="target_type_id" required>
+                                <option value="">-- Pilih Tipe yang akan diedit --</option>
+                                <?php foreach ($all_room_types as $type): ?>
+                                    <option value="<?= $type['id'] ?>"><?= htmlspecialchars($type['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+
+                        <hr>
+                        <h6 class="text-muted small mb-3">Apa yang ingin diubah? (Biarkan kosong jika tidak diubah)</h6>
+
+                        <div class="mb-3">
+                            <label class="form-label">Ubah Status Menjadi:</label>
+                            <select class="form-select" name="bulk_status">
+                                <option value="no_change">-- Tidak Berubah --</option>
+                                <option value="available">Available</option>
+                                <option value="booked">Booked</option>
+                                <option value="maintenance">Maintenance</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Ubah Lantai Menjadi:</label>
+                            <input type="number" class="form-control" name="bulk_floor" placeholder="Biarkan kosong jika tidak diubah">
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Ganti Gambar untuk Semua:</label>
+                            <input type="file" class="form-control" name="bulk_image_files[]" accept="image/*" multiple>
+                            <div class="form-text text-danger x-small">Gambar lama pada kamar tipe ini akan diganti dengan gambar baru ini.</div>
+                        </div>
+
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                        <button type="submit" name="bulk_edit_by_type" class="btn btn-warning" onclick="return confirm('Yakin ingin mengubah data semua kamar dalam tipe ini?');">Terapkan Perubahan Massal</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="editRoomModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content">
                 <form action="kelola_kamar.php" method="POST" enctype="multipart/form-data">
                     <div class="modal-header">
-                        <h5 class="modal-title" id="editRoomModalLabel">Edit Kamar</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        <h5 class="modal-title">Edit Kamar</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <input type="hidden" name="room_id" id="edit_room_id">
                         <input type="hidden" name="old_image" id="edit_old_image">
-                        <div class="mb-3">
-                            <label for="edit_room_number" class="form-label">Nomor Kamar</label>
-                            <input type="text" class="form-control" id="edit_room_number" name="room_number" required>
+
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Nomor Kamar</label>
+                                <input type="text" class="form-control" id="edit_room_number" name="room_number" required>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Lantai</label>
+                                <input type="number" class="form-control" id="edit_floor" name="floor" required min="1">
+                            </div>
                         </div>
                         <div class="mb-3">
-                            <label for="edit_room_type_id" class="form-label">Tipe Kamar</label>
+                            <label class="form-label">Tipe Kamar</label>
                             <select class="form-select" id="edit_room_type_id" name="room_type_id" required>
-                                <?php foreach ($room_types as $type): ?>
+                                <?php foreach ($all_room_types as $type): ?>
                                     <option value="<?= $type['id'] ?>"><?= htmlspecialchars($type['name']) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
                         <div class="mb-3">
-                            <label for="edit_floor" class="form-label">Lantai</label>
-                            <input type="number" class="form-control" id="edit_floor" name="floor" required min="1">
-                        </div>
-                        <div class="mb-3">
-                            <label for="edit_status" class="form-label">Status</label>
+                            <label class="form-label">Status</label>
                             <select class="form-select" id="edit_status" name="status" required>
-                                <option value="available">available</option>
-                                <option value="booked">booked</option>
-                                <option value="maintenance">maintenance</option>
+                                <option value="available">Available</option>
+                                <option value="booked">Booked</option>
+                                <option value="maintenance">Maintenance</option>
                             </select>
                         </div>
-                        <div class="mb-3">
-                            <label for="edit_image_files" class="form-label">Unggah Gambar Baru (Maks. 4 File - Biarkan kosong untuk mempertahankan gambar lama)</label>
-                            <input type="file" class="form-control" id="edit_image_files" name="edit_image_files[]" accept=".jpg, .jpeg, .png, .gif" multiple>
-                            <div class="form-text">Gambar lama: <span id="current_image_name"></span></div>
-                            <div class="form-text">Jika file diunggah, **SEMUA** file lama akan diganti. File baru akan disimpan di **`uploads/kamar/`**.</div>
+                        <div class="mb-3 p-2 border rounded bg-light">
+                            <label class="form-label small">Ganti Gambar (Opsional)</label>
+                            <input type="file" class="form-control form-control-sm" name="edit_image_files[]" accept="image/*" multiple>
                         </div>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
-                        <button type="submit" name="edit_room" class="btn btn-primary">Simpan Perubahan</button>
+                        <button type="submit" name="edit_room" class="btn btn-primary">Simpan</button>
                     </div>
                 </form>
             </div>
@@ -533,31 +606,35 @@ if (!empty($params)) {
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Toggle Sidebar
         var el = document.getElementById("wrapper");
         var toggleButton = document.getElementById("menu-toggle");
-
         toggleButton.onclick = function() {
             el.classList.toggle("toggled");
         };
 
-        // Populate Edit Modal
+        // Fungsi untuk mengatur mode tambah (Single/Bulk)
+        function setMode(mode) {
+            document.getElementById('add_mode').value = mode;
+            if (mode === 'single') {
+                document.getElementById('single_room_number').required = true;
+                document.getElementById('bulk_start').required = false;
+                document.getElementById('bulk_qty').required = false;
+            } else {
+                document.getElementById('single_room_number').required = false;
+                document.getElementById('bulk_start').required = true;
+                document.getElementById('bulk_qty').required = true;
+            }
+        }
+
+        // Isi modal edit satuan
         document.querySelectorAll('.edit-btn').forEach(button => {
             button.addEventListener('click', function() {
-                // Set data ke input tersembunyi dan field lain
                 document.getElementById('edit_room_id').value = this.dataset.id;
-                document.getElementById('edit_old_image').value = this.dataset.image; // Simpan string file lama (dipisahkan koma)
-
+                document.getElementById('edit_old_image').value = this.dataset.image;
                 document.getElementById('edit_room_number').value = this.dataset.number;
                 document.getElementById('edit_room_type_id').value = this.dataset.typeId;
                 document.getElementById('edit_floor').value = this.dataset.floor;
                 document.getElementById('edit_status').value = this.dataset.status;
-
-                // Tampilkan nama file saat ini (string koma-separated)
-                document.getElementById('current_image_name').textContent = this.dataset.image || 'Tidak ada gambar';
-
-                // Kosongkan input file untuk unggahan baru
-                document.getElementById('edit_image_files').value = '';
             });
         });
     </script>

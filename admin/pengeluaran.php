@@ -3,6 +3,12 @@ session_start();
 // Ubah path ini sesuai lokasi file koneksi Anda
 include '../koneksi.php';
 
+// Cek apakah user adalah admin
+if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] != 'admin') {
+    header("Location: ../login.php");
+    exit;
+}
+
 // --- Variabel Konfigurasi & Inisialisasi ---
 $user_id = isset($_SESSION['user_id']) ? $_SESSION['user_id'] : 1;
 $message = '';
@@ -10,21 +16,22 @@ $kategori_list = ['Operasional', 'Gaji Karyawan', 'Perawatan & Perbaikan', 'Pemb
 $action = $_GET['action'] ?? 'read'; // Default action adalah 'read' (menampilkan daftar)
 $id_edit = $_GET['id'] ?? null;
 
-// Kosongkan variabel input default untuk form tambah/edit
+// Inisialisasi variabel input (semua wajib diisi)
 $tanggal = date('Y-m-d');
 $keterangan = '';
 $jumlah = '';
 $kategori = '';
+
 $halaman_judul = "Daftar Pengeluaran";
 $tombol_aksi_text = "Simpan Pengeluaran Baru";
 
-// Logika untuk menampilkan pesan sukses/error dari sesi (setelah redirect/operasi berhasil)
+// Logika untuk menampilkan pesan sukses/error dari sesi
 if (isset($_SESSION['message'])) {
     $message = $_SESSION['message'];
     unset($_SESSION['message']);
 }
 
-// --- FUNGSI SANITASI DAN VALIDASI ---
+// --- FUNGSI SANITASI DAN VALIDASI (HANYA UNTUK PENGELUARAN VARIABEL) ---
 function validate_input($data, $kategori_list)
 {
     global $koneksi;
@@ -32,15 +39,18 @@ function validate_input($data, $kategori_list)
     $errors = [];
 
     // 1. Ambil dan Sanitasi Input
-    $tanggal = $data['tanggal'] ?? '';
+    $tanggal = trim($data['tanggal'] ?? '');
     $keterangan = trim($data['keterangan'] ?? '');
     $jumlah = $data['jumlah'] ?? 0;
     $kategori = $data['kategori'] ?? '';
 
     // 2. Validasi
+
+    // Tanggal selalu wajib diisi
     if (empty($tanggal)) {
         $errors[] = "Tanggal wajib diisi.";
     }
+
     if (empty($keterangan)) {
         $errors[] = "Keterangan wajib diisi.";
     }
@@ -66,17 +76,15 @@ function validate_input($data, $kategori_list)
     ];
 }
 
-
 // --- 1. Logika HAPUS (DELETE) ---
 if ($action === 'delete' && $id_edit) {
-    // Pastikan ID adalah integer
     if (is_numeric($id_edit)) {
         $query_delete = "DELETE FROM pengeluaran WHERE id = ? AND user_id = ?";
         if ($stmt = $koneksi->prepare($query_delete)) {
             $stmt->bind_param("ii", $id_edit, $user_id);
             if ($stmt->execute()) {
                 if ($stmt->affected_rows > 0) {
-                    $_SESSION['message'] = "<div class='alert alert-success'>Pengeluaran dengan ID **$id_edit** berhasil dihapus.</div>";
+                    $_SESSION['message'] = "<div class='alert alert-success'>Pengeluaran dengan ID $id_edit berhasil dihapus.</div>";
                 } else {
                     $_SESSION['message'] = "<div class='alert alert-warning'>Data tidak ditemukan atau Anda tidak memiliki izin.</div>";
                 }
@@ -102,6 +110,7 @@ if ($action === 'add' || $action === 'edit') {
 
     // A. Logika Ambil Data untuk Form EDIT
     if ($action === 'edit' && $id_edit) {
+        // Query hanya mengambil kolom yang relevan
         $query_select = "SELECT tanggal, keterangan, jumlah, kategori FROM pengeluaran WHERE id = ? AND user_id = ?";
         if ($stmt = $koneksi->prepare($query_select)) {
             $stmt->bind_param("ii", $id_edit, $user_id);
@@ -109,7 +118,7 @@ if ($action === 'add' || $action === 'edit') {
             $result = $stmt->get_result();
             if ($result->num_rows === 1) {
                 $pengeluaran = $result->fetch_assoc();
-                $tanggal = $pengeluaran['tanggal'];
+                $tanggal = $pengeluaran['tanggal'] ?? date('Y-m-d');
                 $keterangan = $pengeluaran['keterangan'];
                 $jumlah = $pengeluaran['jumlah'];
                 $kategori = $pengeluaran['kategori'];
@@ -137,34 +146,58 @@ if ($action === 'add' || $action === 'edit') {
             $message = "<div class='alert alert-danger'><ul><li>" . implode("</li><li>", $validated['errors']) . "</li></ul></div>";
         } else {
             // Jika validasi sukses, jalankan INSERT atau UPDATE
+
+            $tanggal_bind = $validated['tanggal'];
+
             if ($action === 'add') {
+                // INSERT: 5 parameter (tanggal, keterangan, jumlah, kategori, user_id)
                 $query_sql = "INSERT INTO pengeluaran (tanggal, keterangan, jumlah, kategori, user_id) VALUES (?, ?, ?, ?, ?)";
-                $bind_params = [$tanggal, $keterangan, $jumlah, $kategori, $user_id];
+                $bind_params = [
+                    $tanggal_bind,
+                    $keterangan,
+                    $jumlah,
+                    $kategori,
+                    $user_id
+                ];
                 $bind_types = "ssdsi";
-                $success_msg = "Data pengeluaran **" . htmlspecialchars($keterangan) . "** berhasil ditambahkan!";
+                $success_msg = "Data pengeluaran " . htmlspecialchars($keterangan) . " berhasil ditambahkan!";
             } else { // action === 'edit'
+                // UPDATE: 6 parameters (tanggal, keterangan, jumlah, kategori, id, user_id)
                 $query_sql = "UPDATE pengeluaran SET tanggal = ?, keterangan = ?, jumlah = ?, kategori = ? WHERE id = ? AND user_id = ?";
-                $bind_params = [$tanggal, $keterangan, $jumlah, $kategori, $id_edit, $user_id];
-                $bind_types = "ssdsii";
-                $success_msg = "Data pengeluaran **" . htmlspecialchars($keterangan) . "** berhasil diperbarui!";
+                $bind_params = [
+                    $tanggal_bind,
+                    $keterangan,
+                    $jumlah,
+                    $kategori,
+                    $id_edit,
+                    $user_id
+                ];
+                $bind_types = "ssdssi";
+                $success_msg = "Data pengeluaran " . htmlspecialchars($keterangan) . " berhasil diperbarui!";
             }
 
             if ($stmt = $koneksi->prepare($query_sql)) {
-                // Binding parameter secara dinamis
+
+                // Binding logic
+                array_unshift($bind_params, $bind_types);
                 $bind_ref = [];
                 foreach ($bind_params as $key => $value) {
                     $bind_ref[$key] = &$bind_params[$key];
                 }
-                array_unshift($bind_ref, $bind_types);
+                $bind_success = call_user_func_array([$stmt, 'bind_param'], $bind_ref);
 
-                call_user_func_array([$stmt, 'bind_param'], $bind_ref);
+                if (!$bind_success) {
+                    $message = "<div class='alert alert-danger'>Kesalahan Internal Binding: Gagal mengikat parameter.</div>";
+                }
 
-                if ($stmt->execute()) {
-                    $_SESSION['message'] = "<div class='alert alert-success'>$success_msg</div>";
-                    header('Location: pengeluaran.php');
-                    exit;
-                } else {
-                    $message = "<div class='alert alert-danger'>Gagal menyimpan data: " . $stmt->error . "</div>";
+                if (empty($message)) {
+                    if ($stmt->execute()) {
+                        $_SESSION['message'] = "<div class='alert alert-success'>$success_msg</div>";
+                        header('Location: pengeluaran.php');
+                        exit;
+                    } else {
+                        $message = "<div class='alert alert-danger'>Gagal menyimpan data: " . $stmt->error . "</div>";
+                    }
                 }
                 $stmt->close();
             } else {
@@ -174,13 +207,13 @@ if ($action === 'add' || $action === 'edit') {
     }
 }
 
-
 // --- 3. Logika TAMPILKAN DAFTAR (READ) ---
 $pengeluaran_data = [];
 $total_pengeluaran = 0;
 
 if ($action === 'read') {
-    $query_read = "SELECT id, tanggal, keterangan, jumlah, kategori FROM pengeluaran WHERE user_id = ? ORDER BY tanggal DESC, id DESC";
+    // Query hanya mengambil kolom yang relevan
+    $query_read = "SELECT id, tanggal, keterangan, jumlah, kategori FROM pengeluaran WHERE user_id = ? ORDER BY id DESC";
     if ($stmt = $koneksi->prepare($query_read)) {
         $stmt->bind_param("i", $user_id);
         $stmt->execute();
@@ -215,7 +248,7 @@ if ($action === 'read') {
 
     <div class="mt-5 content">
         <div class="row justify-content-center">
-            <div class="col-lg-10 col-md-12">
+            <div class="col-lg-11 col-md-12">
                 <div class="card shadow-lg border-0">
                     <div class="card-header bg-primary text-white text-center py-3">
                         <h4 class="mb-0"><i class="fas fa-hand-holding-usd me-2"></i> <?= $halaman_judul ?></h4>
@@ -231,7 +264,7 @@ if ($action === 'read') {
                                     <i class="fas fa-plus me-1"></i> Tambah Pengeluaran Baru
                                 </a>
                                 <div class="alert alert-info py-2 px-3 m-0">
-                                    **Total Pengeluaran:** **Rp <?= number_format($total_pengeluaran, 2, ',', '.') ?>**
+                                    Total Pengeluaran: Rp <?= number_format($total_pengeluaran, 2, ',', '.') ?>
                                 </div>
                             </div>
 
@@ -286,6 +319,7 @@ if ($action === 'read') {
                                     <label for="tanggal" class="form-label fw-bold">Tanggal Pengeluaran <span class="text-danger">*</span></label>
                                     <input type="date" class="form-control" id="tanggal" name="tanggal"
                                         value="<?= htmlspecialchars($tanggal) ?>" required>
+                                    <div class="form-text">Tanggal pengeluaran terjadi.</div>
                                 </div>
 
                                 <div class="mb-3">
@@ -333,6 +367,7 @@ if ($action === 'read') {
         </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
 </body>
 
 </html>

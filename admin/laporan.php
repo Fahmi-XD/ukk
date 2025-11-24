@@ -189,7 +189,7 @@ function format_rupiah($angka)
                                         <button class="nav-link" id="revenue-tab" data-bs-toggle="tab" data-bs-target="#revenue-chart" type="button" role="tab" aria-controls="revenue-chart" aria-selected="false">Pendapatan</button>
                                     </li>
                                 </ul>
-                                <div class="tab-content pt-3" id="myTabContent">
+                                <div class="tab-content pt-3 no-print" id="myTabContent">
                                     <div class="tab-pane fade show active" id="bookings-chart" role="tabpanel" aria-labelledby="bookings-tab">
                                         <canvas id="monthlyBookingsChart" height="100"></canvas>
                                     </div>
@@ -244,7 +244,7 @@ function format_rupiah($angka)
                                 </form>
 
                                 <?php if (!empty($stats_result)): ?>
-                                    <h5 class="mt-4">Statistik Periode **<?= date('d M Y', strtotime($start_date)) ?>** s/d **<?= date('d M Y', strtotime($end_date)) ?>**</h5>
+                                    <h5 class="mt-4">Statistik Periode <?= date('d M Y', strtotime($start_date)) ?> s/d <?= date('d M Y', strtotime($end_date)) ?></h5>
                                     <div class="row g-3 mb-4">
                                         <div class="col-md-4">
                                             <div class="p-3 bg-light border rounded text-center">

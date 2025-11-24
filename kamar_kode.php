@@ -18,12 +18,15 @@ if (!isset($_GET['kode']) || empty($_GET['kode'])) {
 $booking_code = $koneksi->real_escape_string($_GET["kode"]);
 $user_id = $_SESSION['user_id'];
 
-// Query untuk mengambil data booking
-// TELAH DIUBAH: Menghapus JOIN ke tabel 'payments' dan kolom 'p.status'
-$query = "SELECT b.*, r.room_number, r.floor, rt.name as room_type, rt.price_per_night, rt.capacity
+// ==========================================
+// UPDATE QUERY: Menambahkan data dari tabel users
+// ==========================================
+$query = "SELECT b.*, r.room_number, r.floor, rt.name as room_type, rt.price_per_night, rt.capacity,
+          u.name as user_name, u.email, u.phone
           FROM bookings b 
           JOIN rooms r ON b.room_id = r.id 
           JOIN room_types rt ON r.room_type_id = rt.id 
+          JOIN users u ON b.user_id = u.id 
           WHERE b.booking_code = '$booking_code' AND b.user_id = $user_id";
 $result = $koneksi->query($query);
 
@@ -46,21 +49,19 @@ $check_out = new DateTime($booking['check_out']);
 $interval = $check_in->diff($check_out);
 $nights = $interval->days;
 
-// Status booking dalam bahasa Indonesia. 
-// Karena tidak ada tabel payments, status pembayaran akan disamakan dengan status booking.
+// Status booking labels
 $status_labels = [
     'pending' => 'Menunggu Konfirmasi',
     'cancelled' => 'Dibatalkan',
     'checked_in' => 'Check-in',
     'checked_out' => 'Check-out',
-    'paid' => 'Lunas', // Status 'paid' di tabel bookings akan digunakan sebagai status pembayaran
+    'paid' => 'Lunas',
     'failed' => 'Gagal'
 ];
 
 $booking_status = isset($status_labels[$booking['status']]) ? $status_labels[$booking['status']] : $booking['status'];
 
-// TELAH DIUBAH: Menggunakan status dari tabel bookings sebagai Status Pembayaran
-// Status pembayaran akan menjadi 'Lunas' jika status booking adalah 'paid', atau 'Menunggu Konfirmasi' (pending)
+// Logic Status Pembayaran
 $payment_status_raw = ($booking['status'] == 'paid' || $booking['status'] == 'checked_in' || $booking['status'] == 'checked_out') ? 'paid' : ($booking['status'] == 'failed' ? 'failed' : 'pending');
 $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$payment_status_raw] : $payment_status_raw;
 
@@ -74,19 +75,13 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
     <title>Detail Booking - LuxStay</title>
     <style>
         /* CSS Utama */
-        .print-area {
-            display: none;
-            flex-direction: column !important;
-            align-items: center !important;
-            text-align: center !important;
-        }
-
         .booking-card {
             border-radius: 15px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
             overflow: hidden;
             margin-top: 30px;
             margin-bottom: 30px;
+            background-color: #fff;
         }
 
         .booking-header {
@@ -94,6 +89,8 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
             color: white;
             padding: 20px;
             text-align: center;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
         }
 
         .booking-body {
@@ -105,6 +102,8 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
             border-radius: 10px;
             padding: 20px;
             margin-bottom: 20px;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
         }
 
         .booking-code {
@@ -130,6 +129,9 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
             padding: 8px 15px;
             border-radius: 20px;
             display: inline-block;
+            color: white;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
         }
 
         .status-pending {
@@ -139,12 +141,10 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
 
         .status-confirmed {
             background-color: #198754;
-            color: white;
         }
 
         .status-cancelled {
             background-color: #dc3545;
-            color: white;
         }
 
         .info-box {
@@ -157,85 +157,49 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
 
         /* --- CSS Khusus untuk Print/Cetak --- */
         @media print {
-            body * {
-                visibility: hidden;
+            body {
+                background-color: white;
+                font-size: 12pt;
             }
 
-            .print-area,
-            .print-area * {
-                visibility: visible;
-            }
-
-            .print-area {
-                position: absolute;
-                left: 0;
-                display: flex;
-                top: 0;
-                width: 100%;
-                /* Mengubah lebar menjadi 100% untuk tampilan cetak */
-                max-width: 80mm;
-                /* Batasi lebar seperti struk thermal, misal 80mm */
-                margin: 0 auto;
-                /* Posisikan di tengah halaman cetak */
-                padding: 10px;
-                /* Tambahkan padding agar tidak terlalu mepet */
-                color: #000;
-                /* Pastikan teks berwarna hitam */
-                font-family: monospace, sans-serif;
-                /* Gunakan font yang ringkas */
-                font-size: 12px;
-            }
-
-            .booking-card,
-            .booking-header,
-            .booking-body,
-            .container,
-            .row,
-            .col-md-8 {
-                /* Sembunyikan semua elemen tampilan utama */
+            .d-print-none,
+            footer,
+            .btn,
+            .alert,
+            .navbar {
                 display: none !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                box-shadow: none !important;
             }
 
-            .print-header {
-                text-align: center;
-                margin-bottom: 10px;
-                border-bottom: 1px dashed #000;
-                padding-bottom: 5px;
-            }
-
-            .print-detail p {
-                margin: 2px 0;
-            }
-
-            .print-total {
-                margin-top: 10px;
-                border-top: 1px dashed #000;
-                padding-top: 5px;
-                text-align: right;
-            }
-
-            .print-total strong {
-                font-size: 14px;
-            }
-
-            .d-grid {
-                display: none;
-            }
-
-            .footer {
-                display: none;
-            }
-
-            .status-badge {
-                /* Pastikan badge status terlihat saat dicetak, tetapi tanpa warna latar belakang */
-                background: none !important;
-                color: #000 !important;
+            .container {
+                width: 100%;
+                max-width: 100%;
                 padding: 0;
-                border: none;
-                font-weight: bold;
+                margin: 0;
+            }
+
+            .booking-card {
+                box-shadow: none;
+                border: 1px solid #ddd;
+                margin: 0;
+                width: 100%;
+            }
+
+            .booking-header,
+            .booking-info,
+            .status-badge,
+            .booking-code {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+
+            .col-md-6 {
+                width: 50%;
+                float: left;
+            }
+
+            .row {
+                display: flex;
+                flex-wrap: wrap;
             }
         }
     </style>
@@ -252,7 +216,7 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
             <div class="col-md-8">
                 <div class="booking-card">
                     <div class="booking-header">
-                        <h1>Detail Pemesanan</h1>
+                        <h1>Detail Pemesanan - LuxStay</h1>
                     </div>
 
                     <div class="booking-body">
@@ -263,10 +227,25 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
                         <div class="info-box d-print-none">
                             <i class="fas fa-info-circle me-2"></i>
                             <strong>Status Pemesanan:</strong>
-                            <span class="status-badge <?= $booking['status'] == 'confirmed' ? 'status-confirmed' : ($booking['status'] == 'cancelled' ? 'status-cancelled' : 'status-pending') ?>">
+                            <span class="status-badge <?= $booking['status'] == 'paid' ? 'status-confirmed' : ($booking['status'] == 'cancelled' ? 'status-cancelled' : 'status-pending') ?>">
                                 <?= $booking_status ?>
                             </span>
-                            <p class="mt-2 mb-0">Pemesanan Anda sedang menunggu konfirmasi dari admin. Silakan cek status pemesanan secara berkala di halaman riwayat pemesanan.</p>
+                            <?php if ($booking['status'] != 'paid'): ?>
+                                <p class="mt-2 mb-0">Pemesanan Anda sedang menunggu konfirmasi dari admin.</p>
+                            <?php endif; ?>
+                        </div>
+
+                        <div class="booking-info">
+                            <h3>Informasi Pemesan</h3>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <p><strong>Nama Lengkap:</strong> <?= htmlspecialchars($booking['user_name']) ?></p>
+                                    <p><strong>Email:</strong> <?= htmlspecialchars($booking['email']) ?></p>
+                                </div>
+                                <div class="col-md-6">
+                                    <p><strong>Nomor Telepon:</strong> <?= !empty($booking['phone']) ? htmlspecialchars($booking['phone']) : '-' ?></p>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="booking-info">
@@ -285,7 +264,7 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
                         </div>
 
                         <div class="booking-info">
-                            <h3>Detail Pemesanan</h3>
+                            <h3>Detail Waktu & Biaya</h3>
                             <div class="row">
                                 <div class="col-md-6">
                                     <p><strong>Check-in:</strong> <?= $check_in_date ?></p>
@@ -303,19 +282,20 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
                             </div>
                         </div>
 
-                        <div class="alert alert-info d-print-none">
-                            <i class="fas fa-info-circle me-2"></i> Pesanan Anda akan diproses setelah admin menyetujui pembayaran. Silakan cek status pemesanan secara berkala di halaman riwayat pemesanan.
+                        <div class="text-end mt-4" style="display: none;" id="print-date">
+                            <small>Dicetak pada: <?= date('d F Y H:i') ?></small>
                         </div>
+                        <style>
+                            @media print {
+                                #print-date {
+                                    display: block !important;
+                                }
+                            }
+                        </style>
 
-                        <?php
-                        if ($booking["status"] != "pending") {
-                        ?>
-                            <div class="d-grid gap-2 mb-3 d-print-none">
-                                <button onclick="printStruk()" class="btn btn-success btn-lg"><i class="fas fa-print me-2"></i> Cetak Struk</button>
-                            </div>
-                        <?php
-                        }
-                        ?>
+                        <div class="d-grid gap-2 mb-3 d-print-none">
+                            <button onclick="printStruk()" class="btn btn-success btn-lg"><i class="fas fa-print me-2"></i> Cetak Bukti Pemesanan</button>
+                        </div>
 
                         <div class="d-grid gap-2 d-print-none">
                             <a href="riwayat.php" class="btn btn-primary btn-lg">Lihat Riwayat Pemesanan</a>
@@ -327,59 +307,22 @@ $payment_status = isset($status_labels[$payment_status_raw]) ? $status_labels[$p
         </div>
     </div>
 
-    <div class="print-area text-center" style="flex-direction: column; align-items: center;">
-        <div class="print-header">
-            <h3>LuxStay</h3>
-            <p>Jl. Hotel Indah No. 123</p>
-            <p>(021) 1234-5678</p>
-        </div>
-
-        <div class="print-detail">
-            <p>===================================</p>
-            <p>Tanggal Cetak: <?= date('d/m/Y H:i:s') ?></p>
-            <p>Kode Booking: <strong><?= $booking['booking_code'] ?></strong></p>
-            <p>-----------------------------------</p>
-            <p>Kamar: <?= $booking['room_type'] ?> (No. <?= $booking['room_number'] ?>)</p>
-            <p>Lantai: <?= $booking['floor'] ?></p>
-            <p>Check-in: <?= date('d/m/Y', strtotime($booking['check_in'])) ?></p>
-            <p>Check-out: <?= date('d/m/Y', strtotime($booking['check_out'])) ?></p>
-            <p>Durasi: <?= $nights ?> malam</p>
-            <p>-----------------------------------</p>
-            <p>Harga/Malam: Rp <?= number_format($booking['price_per_night'], 0, ',', '.') ?></p>
-            <p>Total Harga: Rp <?= $formatted_price ?></p>
-            <p>Status Pembayaran: <?= $payment_status ?></p>
-        </div>
-
-        <div class="print-total">
-            <p>===================================</p>
-            <p>Total Bayar: <strong>Rp <?= $formatted_price ?></strong></p>
-        </div>
-
-        <div class="text-center mt-3">
-            <p>Terima kasih atas pemesanan Anda!</p>
-        </div>
-    </div>
-
     <footer class="bg-dark text-white py-5 mt-5 d-print-none">
         <div class="container">
             <div class="row">
                 <div class="col-md-4 mb-4 mb-md-0">
                     <h5>LuxStay</h5>
-                    <p>Temukan pengalaman menginap terbaik dengan harga terjangkau dan fasilitas lengkap.</p>
+                    <p>Temukan pengalaman menginap terbaik dengan harga terjangkau.</p>
                 </div>
                 <div class="col-md-4 mb-4 mb-md-0">
                     <h5>Kontak</h5>
-                    <p><i class="fas fa-map-marker-alt me-2"></i> Jl. Hotel Indah No. 123, Kota</p>
-                    <p><i class="fas fa-phone me-2"></i> (021) 1234-5678</p>
-                    <p><i class="fas fa-envelope me-2"></i> info@hotelbooking.com</p>
+                    <p><i class="fas fa-map-marker-alt me-2"></i> Jl. Hotel Indah No. 123</p>
                 </div>
                 <div class="col-md-4">
-                    <h5>Ikuti Kami</h5>
+                    <h5>Social Media</h5>
                     <div class="d-flex gap-3 fs-4">
                         <a href="#" class="text-white"><i class="fab fa-facebook"></i></a>
                         <a href="#" class="text-white"><i class="fab fa-instagram"></i></a>
-                        <a href="#" class="text-white"><i class="fab fa-twitter"></i></a>
-                        <a href="#" class="text-white"><i class="fab fa-youtube"></i></a>
                     </div>
                 </div>
             </div>

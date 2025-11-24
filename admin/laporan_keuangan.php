@@ -1,185 +1,136 @@
 <?php
 session_start();
-// Pastikan path ini benar dan file koneksi Anda mengembalikan objek koneksi (mysqli)
 include '../koneksi.php';
 
-// Cek apakah user adalah admin (Disarankan)
+// Cek apakah user adalah admin
 if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] != 'admin') {
-    // Jika perlu redirect:
-    // header("Location: ../login.php");
-    // exit;
+    header("Location: ../login.php");
+    exit;
 }
 
-// --- FUNGSI UTILITY TANGGAL & FILTER ---
+// --- Variabel Konfigurasi & Inisialisasi ---
+$user_id = $_SESSION['user_id'];
+$message = '';
 
-// Default filter: Bulan ini
-$filter_mode = $_GET['filter_mode'] ?? 'month';
-$filter_start = '';
-$filter_end = '';
-$filter_display = '';
+// Inisialisasi Array Manual untuk Nama Bulan Indonesia
+$nama_bulan_indo = [
+    '01' => 'Januari',
+    '02' => 'Februari',
+    '03' => 'Maret',
+    '04' => 'April',
+    '05' => 'Mei',
+    '06' => 'Juni',
+    '07' => 'Juli',
+    '08' => 'Agustus',
+    '09' => 'September',
+    '10' => 'Oktober',
+    '11' => 'November',
+    '12' => 'Desember'
+];
 
-// Logika penentuan tanggal mulai dan akhir berdasarkan mode filter
-if ($filter_mode == 'day' && isset($_GET['date_filter']) && !empty($_GET['date_filter'])) {
-    // Filter per Hari
-    $date = new DateTime($_GET['date_filter']);
-    // Filter dibuat dari awal hari sampai akhir hari
-    $filter_start = $date->format('Y-m-d 00:00:00');
-    $filter_end = $date->format('Y-m-d 23:59:59');
-    $filter_display = 'Laporan Tanggal: ' . $date->format('d F Y');
-} elseif ($filter_mode == 'month' && isset($_GET['month_filter']) && !empty($_GET['month_filter'])) {
-    // Filter per Bulan
-    $month_year = $_GET['month_filter']; // Format YYYY-MM
-    $start_of_month = new DateTime($month_year . '-01');
-    $end_of_month = new DateTime($month_year . '-01');
-    $end_of_month->modify('last day of this month')->setTime(23, 59, 59);
-
-    $filter_start = $start_of_month->format('Y-m-d H:i:s');
-    $filter_end = $end_of_month->format('Y-m-d H:i:s');
-    $filter_display = 'Laporan Bulan: ' . $start_of_month->format('F Y');
-} elseif ($filter_mode == 'year' && isset($_GET['year_filter']) && !empty($_GET['year_filter'])) {
-    // Filter per Tahun (BARU)
-    $year = $_GET['year_filter']; // Format YYYY
-    $filter_start = $year . '-01-01 00:00:00';
-    $filter_end = $year . '-12-31 23:59:59';
-    $filter_display = 'Laporan Tahun: ' . $year;
-} else {
-    // Default: Bulan ini
-    $filter_mode = 'month';
-    $start_of_month = new DateTime('first day of this month');
-    $end_of_month = new DateTime('last day of this month');
-    $end_of_month->setTime(23, 59, 59);
-
-    $filter_start = $start_of_month->format('Y-m-d H:i:s');
-    $filter_end = $end_of_month->format('Y-m-d H:i:s');
-    $filter_display = 'Laporan Bulan Ini: ' . $start_of_month->format('F Y');
+// Fungsi Pembantu untuk Format Tanggal Indonesia
+function format_indo_date($date_str, $nama_bulan_indo)
+{
+    if (!$date_str) return '-';
+    try {
+        $timestamp = strtotime($date_str);
+        $day = date('d', $timestamp);
+        $month_num = date('m', $timestamp);
+        $year = date('Y', $timestamp);
+        $month_name = $nama_bulan_indo[$month_num];
+        return "$day $month_name $year";
+    } catch (\Exception $e) {
+        return $date_str; // Fallback
+    }
 }
 
-// --- FUNGSI UTAMA LAPORAN ---
+// Ambil filter dari GET request, default ke rentang bulan saat ini
+$current_month_start = date('Y-m-01');
+$current_month_end = date('Y-m-t');
+
+$filter_tanggal_awal = $_GET['tanggal_awal'] ?? $current_month_start;
+$filter_tanggal_akhir = $_GET['tanggal_akhir'] ?? $current_month_end;
+
+// Inisialisasi total
+$total_pemasukan = 0;
+$total_pengeluaran = 0;
+$laba_bersih = 0;
+
+$pemasukan_data = [];
+$pengeluaran_data = [];
+
+// Format periode untuk ditampilkan
+$tanggal_awal_display = format_indo_date($filter_tanggal_awal, $nama_bulan_indo);
+$tanggal_akhir_display = format_indo_date($filter_tanggal_akhir, $nama_bulan_indo);
+$periode_display = $tanggal_awal_display . ' s/d ' . $tanggal_akhir_display;
+
+
+// --- FUNGSI PENGAMBILAN DATA (TELAH DISEDERHANAKAN) ---
 
 /**
- * Mengambil total pendapatan dari tabel bookings (status paid/checked_out)
+ * Mengambil data pendapatan booking dalam rentang tanggal tertentu.
+ * Filtering berdasarkan tanggal check_in.
  */
-function getTotalRevenue($koneksi, $start, $end)
+function fetch_pendapatan_booking($koneksi, $tanggal_awal, $tanggal_akhir)
 {
-    // Menggunakan created_at untuk pendapatan
-    $query = "
-        SELECT SUM(total_price) as total 
-        FROM bookings 
-        WHERE (status = 'paid' OR status = 'checked_out') 
-        AND created_at BETWEEN ? AND ?
-    ";
-
+    $query = "SELECT check_in as tanggal, booking_code as keterangan, total_price as jumlah, status 
+              FROM bookings 
+              WHERE check_in BETWEEN ? AND ? 
+              AND status IN ('confirmed', 'checked_in', 'checked_out', 'paid')
+              ORDER BY check_in ASC";
+    $data = [];
     if ($stmt = $koneksi->prepare($query)) {
-        $stmt->bind_param("ss", $start, $end);
+        // Menggunakan "ss" karena tanggal_awal dan tanggal_akhir adalah string (DATE)
+        $stmt->bind_param("ss", $tanggal_awal, $tanggal_akhir);
         $stmt->execute();
-        $result = $stmt->get_result()->fetch_assoc();
+        $result = $stmt->get_result();
+        while ($row = $result->fetch_assoc()) {
+            $data[] = $row;
+        }
         $stmt->close();
-        return $result['total'] ?? 0;
     }
-    return 0;
-}
-
-/**
- * Mengambil total pengeluaran dari tabel pengeluaran
- */
-function getTotalExpenses($koneksi, $start, $end)
-{
-    // Menggunakan tanggal untuk pengeluaran (hanya tanggal, bukan timestamp)
-    $start_date_only = date('Y-m-d', strtotime($start));
-    $end_date_only = date('Y-m-d', strtotime($end));
-
-    $query = "
-        SELECT SUM(jumlah) as total 
-        FROM pengeluaran 
-        WHERE tanggal BETWEEN ? AND ?
-    ";
-
-    if ($stmt = $koneksi->prepare($query)) {
-        $stmt->bind_param("ss", $start_date_only, $end_date_only);
-        $stmt->execute();
-        $result = $stmt->get_result()->fetch_assoc();
-        $stmt->close();
-        return $result['total'] ?? 0;
-    }
-    return 0;
+    return $data;
 }
 
 /**
- * Mengambil histori pendapatan (bookings) dengan detail
+ * Mengambil data pengeluaran Variabel (berdasarkan tanggal) dalam rentang tanggal tertentu.
+ * Logika Pengeluaran Tetap dihilangkan.
  */
-function getRevenueHistory($koneksi, $start, $end)
+function fetch_pengeluaran($koneksi, $tanggal_awal, $tanggal_akhir)
 {
-    $query = "
-        SELECT 
-            b.booking_code, b.total_price, b.created_at, b.status,
-            u.name as user_name,
-            r.room_number,
-            rt.name as room_type_name
-        FROM bookings b
-        JOIN users u ON b.user_id = u.id
-        JOIN rooms r ON b.room_id = r.id
-        JOIN room_types rt ON r.room_type_id = rt.id
-        WHERE (b.status = 'paid' OR b.status = 'checked_out')
-        AND b.created_at BETWEEN ? AND ?
-        ORDER BY b.created_at DESC
-    ";
-
+    // Query hanya mengambil data pengeluaran yang tanggalnya berada dalam rentang filter
+    $query = "SELECT id, tanggal, keterangan, jumlah, kategori
+              FROM pengeluaran 
+              WHERE 
+                tanggal BETWEEN ? AND ?
+              ORDER BY tanggal ASC";
+    $data = [];
+    $total = 0;
     if ($stmt = $koneksi->prepare($query)) {
-        $stmt->bind_param("ss", $start, $end);
+        // Hanya 2 parameter yang digunakan (tanggal_awal dan tanggal_akhir)
+        $stmt->bind_param("ss", $tanggal_awal, $tanggal_akhir);
         $stmt->execute();
-        $result = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $result = $stmt->get_result();
+        while ($row = $result->fetch_assoc()) {
+            $data[] = $row;
+            $total += $row['jumlah'];
+        }
         $stmt->close();
-        return $result;
     }
-    return [];
+    return ['data' => $data, 'total' => $total];
 }
 
-/**
- * Mengambil histori pengeluaran dengan detail
- */
-function getExpenseHistory($koneksi, $start, $end)
-{
-    $start_date_only = date('Y-m-d', strtotime($start));
-    $end_date_only = date('Y-m-d', strtotime($end));
-
-    $query = "
-        SELECT 
-            p.tanggal, p.keterangan, p.jumlah, p.kategori,
-            u.name as user_id_name
-        FROM pengeluaran p
-        JOIN users u ON p.user_id = u.id
-        WHERE p.tanggal BETWEEN ? AND ?
-        ORDER BY p.tanggal DESC
-    ";
-
-    if ($stmt = $koneksi->prepare($query)) {
-        $stmt->bind_param("ss", $start_date_only, $end_date_only);
-        $stmt->execute();
-        $result = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        $stmt->close();
-        return $result;
-    }
-    return [];
+// --- EKSEKUSI LOGIKA ---
+$pemasukan_data = fetch_pendapatan_booking($koneksi, $filter_tanggal_awal, $filter_tanggal_akhir);
+foreach ($pemasukan_data as $row) {
+    $total_pemasukan += $row['jumlah'];
 }
 
+$pengeluaran_result = fetch_pengeluaran($koneksi, $filter_tanggal_awal, $filter_tanggal_akhir);
+$pengeluaran_data = $pengeluaran_result['data'];
+$total_pengeluaran = $pengeluaran_result['total'];
 
-// --- PENGAMBILAN DATA UTAMA & PERHITUNGAN ---
-$total_revenue = getTotalRevenue($koneksi, $filter_start, $filter_end);
-$total_expenses = getTotalExpenses($koneksi, $filter_start, $filter_end);
-$net_profit = $total_revenue - $total_expenses;
-
-$revenue_history = getRevenueHistory($koneksi, $filter_start, $filter_end);
-$expense_history = getExpenseHistory($koneksi, $filter_start, $filter_end);
-
-// Helper untuk format Rupiah
-function formatRupiah($amount)
-{
-    // Pastikan angka adalah numerik sebelum format
-    if (!is_numeric($amount)) {
-        $amount = 0;
-    }
-    return 'Rp ' . number_format($amount, 2, ',', '.');
-}
+$laba_bersih = $total_pemasukan - $total_pengeluaran;
 ?>
 
 <!DOCTYPE html>
@@ -188,357 +139,242 @@ function formatRupiah($amount)
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Laporan Keuangan Hotel</title>
+    <title>Laporan Keuangan - <?= $periode_display ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="../assets/css/admin-style.css">
+
     <style>
-        .text-print {
-            color: white;
+        .laba-positif {
+            background-color: #d1e7dd;
+            color: #0f5132;
         }
 
+        .laba-negatif {
+            background-color: #f8d7da;
+            color: #842029;
+        }
+
+        .laba-nol {
+            background-color: #fff3cd;
+            color: #664d03;
+        }
+
+        /* --- CSS KHUSUS CETAK (PRINT) --- */
         @media print {
-            .no-print {
+
+            /* Sembunyikan elemen yang tidak perlu saat cetak */
+            .no-print,
+            .sidebar,
+            .btn,
+            form,
+            .navbar {
                 display: none !important;
             }
 
-            .text-print {
-                color: black;
+            /* Reset Margin & Padding agar full kertas */
+            body,
+            .content {
+                margin: 0 !important;
+                padding: 0 !important;
+                background-color: white !important;
+                width: 100% !important;
             }
 
-            body {
-                font-size: 10pt;
-                margin: 0;
-                padding: 0;
-                color: #000 !important;
-            }
-
-            .container-print {
-                width: 100%;
-                margin: 0;
-                padding: 10px;
-                box-shadow: none;
-            }
-
-            .table th,
-            .table td {
-                padding: 0.2rem;
-                font-size: 10pt;
-            }
-
-            .print-header {
-                text-align: center;
-                border-bottom: 2px solid #000;
-                margin-bottom: 15px;
-            }
-
-            .summary-table {
-                width: 100%;
-                margin-bottom: 20px;
-                border-collapse: collapse;
-            }
-
-            .summary-table td {
-                border-bottom: 1px dashed #000;
-                padding: 5px 0;
-            }
-
-            .text-end {
-                text-align: right;
-            }
-
-            #print-container {
-                display: none;
-            }
-
-            /* Memastikan warna latar belakang card untuk ringkasan tetap terlihat di cetak */
-            .card.bg-success,
-            .card.bg-danger,
-            .card.bg-primary {
-                background-color: #f0f0f0 !important;
-                /* Warna terang untuk latar belakang */
-                border: 1px solid #ccc;
+            /* Pastikan warna background (seperti tabel header) ikut ter-print */
+            .card-header,
+            .table-primary,
+            .table-danger,
+            .badge {
+                -webkit-print-color-adjust: exact;
                 print-color-adjust: exact;
             }
 
-            .card.bg-warning {
-                background-color: #fff3cd !important;
-                border: 1px solid #ccc;
-                print-color-adjust: exact;
+            /* Hilangkan shadow card agar terlihat flat di kertas */
+            .card {
+                box-shadow: none !important;
+                border: 1px solid #ddd !important;
             }
 
+            /* Layout Tanda Tangan muncul saat print */
+            .signature-section {
+                display: flex !important;
+                margin-top: 50px;
+                page-break-inside: avoid;
+            }
+        }
+
+        /* Sembunyikan tanda tangan di tampilan layar biasa */
+        .signature-section {
+            display: none;
         }
     </style>
 </head>
 
 <body class="bg-light">
-    <div id="print-container">
+
+    <div class="no-print">
         <?php include "sidebar.php" ?>
     </div>
 
-    <div class="container-print content">
-        <nav class="navbar navbar-expand-lg navbar-light bg-transparent px-4 no-print">
-            <div class="d-flex align-items-center">
-                <i class="fas fa-align-left primary-text fs-4 me-3" id="menu-toggle"></i>
-                <h2 class="fs-2 m-0">Laporan Keuangan</h2>
-            </div>
-        </nav>
+    <div class="mt-5 content">
+        <div class="container-fluid">
+            <div class="row justify-content-center">
+                <div class="col-lg-11 col-md-12">
 
-        <p class="lead text-muted no-print mt-5"><?= $filter_display ?></p>
-
-        <div class="card shadow-sm mb-4 p-3 no-print">
-            <h5 class="card-title mb-3">Filter Laporan</h5>
-            <form method="GET" action="laporan_keuangan.php" class="row g-3 align-items-end">
-                <div class="col-md-3">
-                    <label for="filter_mode" class="form-label">Mode Filter</label>
-                    <select class="form-select" id="filter_mode" name="filter_mode" onchange="toggleFilterInputs(this.value)">
-                        <option value="month" <?= $filter_mode == 'month' ? 'selected' : '' ?>>Bulan</option>
-                        <option value="year" <?= $filter_mode == 'year' ? 'selected' : '' ?>>Tahun</option>
-                        <option value="day" <?= $filter_mode == 'day' ? 'selected' : '' ?>>Hari</option>
-                    </select>
-                </div>
-
-                <div class="col-md-5">
-                    <div id="month_input" style="display: <?= $filter_mode == 'month' ? 'block' : 'none' ?>;">
-                        <label for="month_filter" class="form-label">Pilih Bulan</label>
-                        <input type="month" class="form-control" id="month_filter" name="month_filter"
-                            value="<?= $filter_mode == 'month' && isset($_GET['month_filter']) ? htmlspecialchars($_GET['month_filter']) : date('Y-m') ?>">
+                    <div class="d-flex justify-content-end mb-3 no-print">
+                        <button onclick="window.print()" class="btn btn-secondary btn-lg shadow">
+                            <i class="fas fa-print me-2"></i> Cetak Laporan
+                        </button>
                     </div>
-                    <div id="year_input" style="display: <?= $filter_mode == 'year' ? 'block' : 'none' ?>;">
-                        <label for="year_filter" class="form-label">Pilih Tahun</label>
-                        <input type="number" class="form-control" id="year_filter" name="year_filter" min="2000" max="<?= date('Y') ?>"
-                            value="<?= $filter_mode == 'year' && isset($_GET['year_filter']) ? htmlspecialchars($_GET['year_filter']) : date('Y') ?>">
-                    </div>
-                    <div id="day_input" style="display: <?= $filter_mode == 'day' ? 'block' : 'none' ?>;">
-                        <label for="date_filter" class="form-label">Pilih Tanggal</label>
-                        <input type="date" class="form-control" id="date_filter" name="date_filter"
-                            value="<?= $filter_mode == 'day' && isset($_GET['date_filter']) ? htmlspecialchars($_GET['date_filter']) : date('Y-m-d') ?>">
-                    </div>
-                </div>
 
-                <div class="col-md-4">
-                    <button type="submit" class="btn btn-primary me-2"><i class="fas fa-filter"></i> Tampilkan</button>
-                    <button type="button" class="btn btn-info text-white" onclick="window.print()"><i class="fas fa-print"></i> Cetak Laporan</button>
-                </div>
-            </form>
-        </div>
-
-        <div class="print-header d-none d-print-block">
-            <h3>LAPORAN KEUANGAN HOTEL</h3>
-            <p style="margin: 0; font-weight: bold;"><?= $filter_display ?></p>
-            <p style="font-size: 8pt;">Dicetak: <?= date('d/m/Y H:i:s') ?></p>
-        </div>
-
-        <h4 class="mb-3">Rekapitulasi Keuangan</h4>
-        <div class="row mb-4">
-
-            <div class="col-md-4 mb-3">
-                <div class="card bg-success text-print shadow">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <div>
-                                <div class="text-uppercase fw-bold">Pendapatan (Revenue)</div>
-                                <h2 class="mb-0"><?= formatRupiah($total_revenue) ?></h2>
-                            </div>
-                            <i class="fas fa-money-bill-wave fa-3x"></i>
+                    <div class="card shadow-lg border-0">
+                        <div class="card-header bg-success text-white text-center py-3">
+                            <h3 class="mb-1 text-uppercase">Laporan Keuangan Hotel</h3>
+                            <h5 class="mb-0">Periode: <strong><?= $periode_display ?></strong></h5>
                         </div>
-                    </div>
-                </div>
-            </div>
+                        <div class="card-body p-4">
 
-            <div class="col-md-4 mb-3">
-                <div class="card bg-danger text-print shadow">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <div>
-                                <div class="text-uppercase fw-bold">Pengeluaran (Expenses)</div>
-                                <h2 class="mb-0"><?= formatRupiah($total_expenses) ?></h2>
+                            <div class="mb-4 p-3 border rounded bg-light-subtle no-print">
+                                <form method="GET" action="laporan_keuangan.php" class="row g-3 align-items-end">
+                                    <div class="col-md-5">
+                                        <label class="form-label">Tanggal Awal</label>
+                                        <input type="date" class="form-control" name="tanggal_awal" value="<?= $filter_tanggal_awal ?>" required>
+                                    </div>
+                                    <div class="col-md-5">
+                                        <label class="form-label">Tanggal Akhir</label>
+                                        <input type="date" class="form-control" name="tanggal_akhir" value="<?= $filter_tanggal_akhir ?>" required>
+                                    </div>
+                                    <div class="col-md-2 d-grid">
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="fas fa-filter me-1"></i> Tampilkan
+                                        </button>
+                                    </div>
+                                </form>
                             </div>
-                            <i class="fas fa-shopping-cart fa-3x"></i>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-md-4 mb-3">
-                <?php $laba_class = $net_profit >= 0 ? 'bg-primary text-print' : 'bg-warning text-print'; ?>
-                <div class="card <?= $laba_class ?> shadow">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <div>
-                                <div class="text-uppercase fw-bold">Laba Bersih (Net Profit)</div>
-                                <h2 class="mb-0"><?= formatRupiah($net_profit) ?></h2>
+                            <div class="row mb-4 text-center">
+                                <div class="col-4">
+                                    <div class="card border-primary h-100">
+                                        <div class="card-body p-2">
+                                            <small class="text-primary fw-bold text-uppercase">Total Pemasukan</small>
+                                            <h4 class="fw-bold mt-1">Rp <?= number_format($total_pemasukan, 0, ',', '.') ?></h4>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-4">
+                                    <div class="card border-danger h-100">
+                                        <div class="card-body p-2">
+                                            <small class="text-danger fw-bold text-uppercase">Total Pengeluaran</small>
+                                            <h4 class="fw-bold mt-1">Rp <?= number_format($total_pengeluaran, 0, ',', '.') ?></h4>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-4">
+                                    <?php $laba_class = ($laba_bersih > 0) ? 'laba-positif' : (($laba_bersih < 0) ? 'laba-negatif' : 'laba-nol'); ?>
+                                    <div class="card h-100 <?= $laba_class ?>">
+                                        <div class="card-body p-2">
+                                            <small class="fw-bold text-uppercase">Laba Bersih</small>
+                                            <h4 class="fw-bold mt-1">Rp <?= number_format($laba_bersih, 0, ',', '.') ?></h4>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                            <i class="fas fa-chart-line fa-3x"></i>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
 
-        <div class="d-none d-print-block mb-4">
-            <h5 class="mt-3">Ringkasan</h5>
-            <table class="summary-table">
-                <tr>
-                    <td>Pendapatan</td>
-                    <td class="text-end"><?= formatRupiah($total_revenue) ?></td>
-                </tr>
-                <tr>
-                    <td>Pengeluaran</td>
-                    <td class="text-end"><?= formatRupiah($total_expenses) ?></td>
-                </tr>
-                <tr class="fw-bold">
-                    <td>LABA BERSIH</td>
-                    <td class="text-end"><?= formatRupiah($net_profit) ?></td>
-                </tr>
-            </table>
-        </div>
+                            <hr class="my-4">
 
-
-        <div class="row">
-
-            <div class="col-lg-6 mb-4">
-                <div class="card shadow">
-                    <div class="card-header bg-success text-white">
-                        <h5 class="mb-0">Histori Pendapatan</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-sm table-hover table-striped">
-                                <thead>
-                                    <tr>
-                                        <th>Tanggal</th>
-                                        <th>Kode Booking</th>
-                                        <th>Kamar</th>
-                                        <th class="text-end">Jumlah</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if (!empty($revenue_history)): ?>
-                                        <?php foreach ($revenue_history as $rev): ?>
-                                            <tr>
-                                                <td><?= date('d/m/Y H:i', strtotime($rev['created_at'])) ?></td>
-                                                <td><?= htmlspecialchars($rev['booking_code']) ?></td>
-                                                <td><?= htmlspecialchars($rev['room_number']) ?> (<?= htmlspecialchars($rev['room_type_name']) ?>)</td>
-                                                <td class="text-end"><?= formatRupiah($rev['total_price']) ?></td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php else: ?>
+                            <div class="mb-4">
+                                <h5 class="text-primary border-bottom pb-2 mb-3">1. Rincian Pemasukan (Booking)</h5>
+                                <table class="table table-bordered table-sm align-middle w-100">
+                                    <thead class="table-primary text-center">
                                         <tr>
-                                            <td colspan="4" class="text-center">Tidak ada transaksi pendapatan pada periode ini.</td>
+                                            <th width="15%">Tanggal</th>
+                                            <th>Kode Booking / Tamu</th>
+                                            <th width="15%">Status</th>
+                                            <th width="20%">Jumlah</th>
                                         </tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-lg-6 mb-4">
-                <div class="card shadow">
-                    <div class="card-header bg-danger text-white">
-                        <h5 class="mb-0">Histori Pengeluaran</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-sm table-hover table-striped">
-                                <thead>
-                                    <tr>
-                                        <th>Tanggal</th>
-                                        <th>Keterangan</th>
-                                        <th>Kategori</th>
-                                        <th class="text-end">Jumlah</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if (!empty($expense_history)): ?>
-                                        <?php foreach ($expense_history as $exp): ?>
+                                    </thead>
+                                    <tbody>
+                                        <?php if (count($pemasukan_data) > 0): ?>
+                                            <?php foreach ($pemasukan_data as $data): ?>
+                                                <tr>
+                                                    <td class="text-center"><?= date('d/m/Y', strtotime($data['tanggal'])) ?></td>
+                                                    <td><?= htmlspecialchars($data['keterangan']) ?></td>
+                                                    <td class="text-center"><span class="badge bg-success text-white"><?= ucfirst($data['status']) ?></span></td>
+                                                    <td class="text-end">Rp <?= number_format($data['jumlah'], 0, ',', '.') ?></td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        <?php else: ?>
                                             <tr>
-                                                <td><?= date('d/m/Y', strtotime($exp['tanggal'])) ?></td>
-                                                <td><?= htmlspecialchars($exp['keterangan']) ?></td>
-                                                <td><?= htmlspecialchars($exp['kategori']) ?></td>
-                                                <td class="text-end"><?= formatRupiah($exp['jumlah']) ?></td>
+                                                <td colspan="4" class="text-center fst-italic text-muted">Tidak ada data.</td>
                                             </tr>
-                                        <?php endforeach; ?>
-                                    <?php else: ?>
-                                        <tr>
-                                            <td colspan="4" class="text-center">Tidak ada transaksi pengeluaran pada periode ini.</td>
+                                        <?php endif; ?>
+                                        <tr class="fw-bold bg-light">
+                                            <td colspan="3" class="text-end">Total Pemasukan</td>
+                                            <td class="text-end">Rp <?= number_format($total_pemasukan, 0, ',', '.') ?></td>
                                         </tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div class="mb-4">
+                                <h5 class="text-danger border-bottom pb-2 mb-3">2. Rincian Pengeluaran (Variabel)</h5>
+                                <table class="table table-bordered table-sm align-middle w-100">
+                                    <thead class="table-danger text-center">
+                                        <tr>
+                                            <th width="15%">Tanggal</th>
+                                            <th>Keterangan</th>
+                                            <th width="15%">Kategori</th>
+                                            <th width="20%">Jumlah</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php if (count($pengeluaran_data) > 0): ?>
+                                            <?php foreach ($pengeluaran_data as $data): ?>
+                                                <tr>
+                                                    <td class="text-center">
+                                                        <?= date('d/m/Y', strtotime($data['tanggal'])) ?>
+                                                    </td>
+                                                    <td><?= htmlspecialchars($data['keterangan']) ?></td>
+                                                    <td><?= htmlspecialchars($data['kategori']) ?></td>
+                                                    <td class="text-end">Rp <?= number_format($data['jumlah'], 0, ',', '.') ?></td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        <?php else: ?>
+                                            <tr>
+                                                <td colspan="4" class="text-center fst-italic text-muted">Tidak ada data.</td>
+                                            </tr>
+                                        <?php endif; ?>
+                                        <tr class="fw-bold bg-light">
+                                            <td colspan="3" class="text-end">Total Pengeluaran</td>
+                                            <td class="text-end">Rp <?= number_format($total_pengeluaran, 0, ',', '.') ?></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div class="signature-section row mt-5 pt-5">
+                                <div class="col-4 text-center">
+                                    <p class="mb-5">Mengetahui,<br><strong>Manager Hotel</strong></p>
+                                    <br><br>
+                                    <p class="text-decoration-underline fw-bold mt-4">( .................................... )</p>
+                                </div>
+                                <div class="col-4 offset-4 text-center">
+                                    <p class="mb-5">
+                                        <?= format_indo_date(date('Y-m-d'), $nama_bulan_indo) ?><br>
+                                        Dibuat Oleh,<br><strong>Admin Keuangan</strong>
+                                    </p>
+                                    <br><br>
+                                    <p class="text-decoration-underline fw-bold mt-4">( <?= htmlspecialchars($_SESSION['user_name'] ?? 'Admin') ?> )</p>
+                                </div>
+                            </div>
+
                         </div>
                     </div>
                 </div>
             </div>
         </div>
-
     </div>
-
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Toggle Sidebar
-        var el = document.getElementById("wrapper");
-        var toggleButton = document.getElementById("menu-toggle");
-
-        if (toggleButton && el) {
-            toggleButton.onclick = function() {
-                el.classList.toggle("toggled");
-            };
-        }
-
-
-        // Fungsi untuk menampilkan atau menyembunyikan input filter (Bulan, Tahun, atau Hari)
-        function toggleFilterInputs(mode) {
-            const monthInput = document.getElementById('month_input');
-            const yearInput = document.getElementById('year_input');
-            const dayInput = document.getElementById('day_input');
-
-            // Sembunyikan semua dulu
-            monthInput.style.display = 'none';
-            yearInput.style.display = 'none';
-            dayInput.style.display = 'none';
-
-            // Tampilkan yang sesuai mode
-            if (mode === 'month') {
-                monthInput.style.display = 'block';
-            } else if (mode === 'year') {
-                yearInput.style.display = 'block';
-            } else if (mode === 'day') {
-                dayInput.style.display = 'block';
-            }
-        }
-
-        // Panggil fungsi toggle saat halaman dimuat
-        document.addEventListener('DOMContentLoaded', () => {
-            const modeSelect = document.getElementById('filter_mode');
-            if (modeSelect) {
-                toggleFilterInputs(modeSelect.value);
-            }
-        });
-
-        // Mengatasi masalah pengiriman form dengan input kosong
-        document.querySelector('form').addEventListener('submit', function(e) {
-            const mode = document.getElementById('filter_mode').value;
-            const monthFilter = document.getElementById('month_filter');
-            const yearFilter = document.getElementById('year_filter');
-            const dayFilter = document.getElementById('date_filter');
-
-            // Hapus atribut 'name' dari input yang tidak digunakan agar tidak ikut terkirim
-            monthFilter.removeAttribute('name');
-            yearFilter.removeAttribute('name');
-            dayFilter.removeAttribute('name');
-
-            if (mode === 'month') {
-                monthFilter.setAttribute('name', 'month_filter');
-            } else if (mode === 'year') {
-                yearFilter.setAttribute('name', 'year_filter');
-            } else if (mode === 'day') {
-                dayFilter.setAttribute('name', 'date_filter');
-            }
-        });
-    </script>
 </body>
 
 </html>
