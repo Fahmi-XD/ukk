@@ -1,5 +1,11 @@
 <?php
-include 'bootstrap.php'
+// Asumsikan bootstrap.php menyertakan koneksi ke database dan file lain yang diperlukan.
+include 'bootstrap.php';
+
+// Ambil nilai filter dari URL untuk mengisi kembali form
+$capacity = $_GET['capacity'] ?? '';
+$price = $_GET['price'] ?? '';
+$search = $_GET['search'] ?? '';
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -8,7 +14,7 @@ include 'bootstrap.php'
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Semua Kamar - LuxStay</title>
-    <!-- Custom CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
     <style>
         .page-header {
             background: linear-gradient(rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.5)), url('https://i.pinimg.com/736x/42/b6/8c/42b68cd2490f7a0467234a71b4d4d6fb.jpg');
@@ -50,7 +56,6 @@ include 'bootstrap.php'
 </head>
 
 <body>
-    <!-- Page Header -->
     <header class="page-header text-center">
         <div class="container">
             <h1 class="display-4 fw-bold mb-4">Semua Kamar</h1>
@@ -58,51 +63,55 @@ include 'bootstrap.php'
         </div>
     </header>
 
-    <!-- Main Content -->
     <div class="container mb-5">
-        <!-- Filter Section -->
         <div class="filter-section shadow-sm mb-5">
-            <form action="" method="GET">
+            <form action="semua_kamar.php" method="GET" id="filter-form">
                 <div class="row g-3">
                     <div class="col-md-4">
                         <label for="capacity" class="form-label">Kapasitas</label>
                         <select class="form-select" id="capacity" name="capacity">
                             <option value="">Semua Kapasitas</option>
-                            <option value="1">1 Orang</option>
-                            <option value="2">2 Orang</option>
-                            <option value="3">3 Orang</option>
-                            <option value="4">4 Orang</option>
-                            <option value="5">5+ Orang</option>
+                            <option value="1" <?= $capacity == '1' ? 'selected' : '' ?>>1 Orang</option>
+                            <option value="2" <?= $capacity == '2' ? 'selected' : '' ?>>2 Orang</option>
+                            <option value="3" <?= $capacity == '3' ? 'selected' : '' ?>>3 Orang</option>
+                            <option value="4" <?= $capacity == '4' ? 'selected' : '' ?>>4 Orang</option>
+                            <option value="5" <?= $capacity == '5' ? 'selected' : '' ?>>5+ Orang</option>
                         </select>
                     </div>
                     <div class="col-md-4">
                         <label for="price" class="form-label">Harga Maksimum</label>
                         <select class="form-select" id="price" name="price">
                             <option value="">Semua Harga</option>
-                            <option value="500000">Dibawah Rp 500.000</option>
-                            <option value="1000000">Dibawah Rp 1.000.000</option>
-                            <option value="1500000">Dibawah Rp 1.500.000</option>
-                            <option value="2000000">Dibawah Rp 2.000.000</option>
+                            <option value="500000" <?= $price == '500000' ? 'selected' : '' ?>>Dibawah Rp 500.000</option>
+                            <option value="1000000" <?= $price == '1000000' ? 'selected' : '' ?>>Dibawah Rp 1.000.000</option>
+                            <option value="1500000" <?= $price == '1500000' ? 'selected' : '' ?>>Dibawah Rp 1.500.000</option>
+                            <option value="2000000" <?= $price == '2000000' ? 'selected' : '' ?>>Dibawah Rp 2.000.000</option>
                         </select>
                     </div>
                     <div class="col-md-4">
                         <label for="search" class="form-label">Cari Kamar</label>
                         <div class="input-group">
-                            <input type="text" class="form-control" id="search" name="search" placeholder="Nama atau fasilitas kamar...">
+                            <input type="text" class="form-control" id="search" name="search" placeholder="Nama atau fasilitas kamar..." value="<?= htmlspecialchars($search) ?>">
                             <button class="btn btn-primary" type="submit">Cari</button>
                         </div>
+                        <button class="btn btn-success w-100 mt-2" type="button" onclick="window.location.href = 'kamar_semua.php'">
+                            <i class="fas fa-undo me-1"></i> Reset Filter
+                        </button>
                     </div>
                 </div>
             </form>
         </div>
 
-        <!-- Room List -->
         <div class="row" id="room-list">
-
+            <div class="col-12 text-center">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p>Memuat kamar...</p>
+            </div>
         </div>
     </div>
 
-    <!-- Footer -->
     <footer class="bg-dark text-white py-5">
         <div class="container">
             <div class="row">
@@ -133,21 +142,35 @@ include 'bootstrap.php'
         </div>
     </footer>
 
-    <!-- Bootstrap JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="./assets/js/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
     <script>
-        $(document).ready(function() {
+        // Fungsi untuk mengambil data kamar dengan filter
+        function fetchRooms(filters) {
+            const container = $("#room-list");
+            container.html(`
+                <div class="col-12 text-center py-5">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2">Memuat kamar...</p>
+                </div>
+            `);
+
+            // Buat query string dari objek filter
+            // $.param(filters) akan mengonversi objek JS menjadi format URL: capacity=2&price=1000000&search=deluxe
+            const queryString = $.param(filters);
+            const apiUrl = "api/hotel.php?" + queryString;
+
             $.ajax({
-                url: "api/hotel.php",
+                url: apiUrl,
                 method: "GET",
                 dataType: "json",
                 success: function(response) {
-                    const container = $("#room-list");
                     container.empty(); // kosongkan isi dulu
 
-                    if (response.status === "success") {
+                    if (response.status === "success" && response.data.length > 0) {
                         response.data.forEach(function(room) {
                             // Tentukan badge
                             let badge = room.available_rooms > 0 ?
@@ -155,58 +178,105 @@ include 'bootstrap.php'
                                 `<span class="badge bg-danger">Tidak tersedia</span>`;
 
                             // Format harga
-                            let priceFormatted = new Intl.NumberFormat('id-ID').format(room.price_per_night);
+                            let priceFormatted = new Intl.NumberFormat('id-ID').format(parseFloat(room.price_per_night));
 
-                            // Ikon fasilitas
+                            // Ikon fasilitas (Ditingkatkan untuk ikon yang lebih spesifik)
                             let icons = '';
-                            room.facilities.split(",").forEach(facility => {
-                                let icon = 'fa-check';
-                                let f = facility.toLowerCase();
+                            if (room.facilities) {
+                                room.facilities.split(",").forEach(facility => {
+                                    let icon = 'fa-check';
+                                    let f = facility.toLowerCase().trim();
 
-                                if (f.includes('wifi')) icon = 'fa-wifi';
-                                else if (f.includes('tv') || f.includes('televisi')) icon = 'fa-tv';
-                                else if (f.includes('ac') || f.includes('air')) icon = 'fa-snowflake';
-                                else if (f.includes('sarapan') || f.includes('breakfast')) icon = 'fa-utensils';
-                                else if (f.includes('parkir') || f.includes('parking')) icon = 'fa-car';
+                                    if (f.includes('wifi')) icon = 'fa-wifi';
+                                    else if (f.includes('tv') || f.includes('televisi')) icon = 'fa-tv';
+                                    else if (f.includes('ac') || f.includes('air')) icon = 'fa-snowflake';
+                                    else if (f.includes('sarapan') || f.includes('breakfast')) icon = 'fa-utensils';
+                                    else if (f.includes('minibar')) icon = 'fa-wine-glass-alt';
+                                    else if (f.includes('bathtub') || f.includes('jacuzzi')) icon = 'fa-bath';
+                                    else if (f.includes('tamu') || f.includes('living')) icon = 'fa-couch';
+                                    else if (f.includes('kerja') || f.includes('desk')) icon = 'fa-desktop';
 
-                                icons += `<span class="me-3"><i class="fas ${icon} me-1"></i> ${facility}</span>`;
-                            });
+                                    icons += `<span class="me-3"><i class="fas ${icon} me-1 text-primary"></i> ${facility.trim()}</span>`;
+                                });
+                            }
 
-                            room.room_image = room.room_image ? "./uploads/kamar/" + room.room_image[0] : "https://i.pinimg.com/736x/42/b6/8c/42b68cd2490f7a0467234a71b4d4d6fb.jpg";
+                            // Tentukan gambar
+                            let roomImage;
+                            if (room.room_image && room.room_image.length > 0) {
+                                roomImage = `./uploads/kamar/${room.room_image[0]}`;
+                            } else {
+                                roomImage = "https://i.pinimg.com/736x/42/b6/8c/42b68cd2490f7a0467234a71b4d4d6fb.jpg";
+                            }
+
 
                             // Susun card kamar
                             const html = `
-                        <div class="col-md-4 mb-4">
-                            <div class="card room-card shadow">
-                                <img src="${room.room_image}" class="card-img-top room-img" alt="${room.name}">
-                                <div class="card-body">
-                                    <div class="d-flex justify-content-between align-items-start mb-2">
-                                        <h5 class="card-title mb-0">${room.name}</h5>
-                                        ${badge}
+                                <div class="col-md-4 mb-4">
+                                    <div class="card room-card shadow">
+                                        <img src="${roomImage}" class="card-img-top room-img" alt="${room.name}">
+                                        <div class="card-body">
+                                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                                <h5 class="card-title mb-0">${room.name}</h5>
+                                                ${badge}
+                                            </div>
+                                            <p class="card-text">${room.description.substring(0, 100)}...</p>
+                                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                                <span class="badge bg-primary rounded-pill">Kapasitas: ${room.capacity} orang</span>
+                                                <span class="fw-bold text-primary">Rp ${priceFormatted}/malam</span>
+                                            </div>
+                                            <div class="facilities-icons mb-3" style="font-size: 0.9rem;">${icons}</div>
+                                            <a href="kamar_detail.php?id=${room.id}" class="btn btn-outline-primary w-100">Lihat Detail</a>
+                                        </div>
                                     </div>
-                                    <p class="card-text">${room.description}</p>
-                                    <div class="d-flex justify-content-between align-items-center mb-3">
-                                        <span class="badge bg-primary rounded-pill">Kapasitas: ${room.capacity} orang</span>
-                                        <span class="fw-bold text-primary">Rp ${priceFormatted}/malam</span>
-                                    </div>
-                                    <div class="facilities-icons mb-3">${icons}</div>
-                                    <a href="kamar_detail.php?id=${room.id}" class="btn btn-outline-primary w-100">Lihat Detail</a>
-                                </div>
-                            </div>
-                        </div>`;
+                                </div>`;
 
                             container.append(html);
                         });
                     } else {
-                        container.html(`<div class="col-12"><p class="text-center">Tidak ada tipe kamar yang tersedia saat ini.</p></div>`);
+                        container.html(`<div class="col-12 text-center py-5"><p class="text-muted">😢 Tidak ada tipe kamar yang ditemukan dengan kriteria tersebut.</p></div>`);
                     }
                 },
                 error: function(xhr, status, error) {
                     console.error("Gagal memuat data:", error);
-                    $("#room-list").html(`<div class='col-12'><p class='text-center text-danger'>Gagal memuat data kamar.</p></div>`);
+                    container.html(`<div class='col-12 text-center py-5'><p class='text-center text-danger'>Gagal memuat data kamar.</p></div>`);
                 }
-            })
-        })
+            });
+        }
+
+        $(document).ready(function() {
+            // 1. Ambil parameter dari URL saat halaman dimuat
+            const urlParams = new URLSearchParams(window.location.search);
+            const initialFilters = {
+                // Ambil nilai filter dari URL (jika ada)
+                capacity: urlParams.get('capacity') || '',
+                price: urlParams.get('price') || '',
+                search: urlParams.get('search') || ''
+            };
+
+            // 2. Load kamar dengan filter awal
+            fetchRooms(initialFilters);
+
+            // 3. Tangani SUBMIT form
+            $('#filter-form').on('submit', function(e) {
+                e.preventDefault(); // Mencegah form submission default
+
+                // Kumpulkan filter saat ini dari form
+                const currentFilters = {
+                    capacity: $('#capacity').val(),
+                    price: $('#price').val(),
+                    search: $('#search').val()
+                };
+
+                // Perbarui URL browser agar filter tetap ada saat reload
+                const newUrl = window.location.pathname + '?' + $.param(currentFilters);
+                window.history.pushState({
+                    path: newUrl
+                }, '', newUrl);
+
+                // Panggil fungsi pengambilan data dengan filter baru
+                fetchRooms(currentFilters);
+            });
+        });
     </script>
 </body>
 

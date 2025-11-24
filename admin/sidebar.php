@@ -11,6 +11,9 @@
         <a href="kelola_kamar.php" class="list-group-item list-group-item-action bg-transparent second-text fw-bold">
             <i class="fas fa-bed me-2"></i>Kelola Kamar
         </a>
+        <a href="kelola_type_kamar.php" class="list-group-item list-group-item-action bg-transparent second-text fw-bold">
+            <i class="fas fa-tint me-2"></i>Kelola Type Kamar
+        </a>
         <a href="kelola_user.php" class="list-group-item list-group-item-action bg-transparent second-text fw-bold">
             <i class="fas fa-users me-2"></i>Kelola Pengguna
         </a>
